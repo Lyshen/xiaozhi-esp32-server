@@ -30,31 +30,52 @@ async def sendAudioMessage(conn, audios, text, text_index=0):
 
 # 播放音频
 async def sendAudio(conn, audios):
-    # 流控参数优化
-    frame_duration = 60  # 帧时长（毫秒），匹配 Opus 编码
+    # 流控参数优化 - 使用与音频编码器相同的帧时长
+    frame_duration = 20  # 帧时长改为20ms，与Opus编码设置匹配
+    
+    # 记录发送开始时间
     start_time = time.perf_counter()
     play_position = 0
+    total_frames = len(audios)
+    
+    logger.bind(tag=TAG).debug(f"开始发送音频: {total_frames}帧, 帧长={frame_duration}ms")
 
-    # 预缓冲：发送前 3 帧
-    pre_buffer = min(3, len(audios))
+    # 预缓冲：发送前几帧以减少初始延迟
+    pre_buffer = min(5, len(audios))  # 增加预缓冲数量
     for i in range(pre_buffer):
         await conn.websocket.send(audios[i])
+        play_position += frame_duration
 
     # 正常播放剩余帧
-    for opus_packet in audios[pre_buffer:]:
+    for i, opus_packet in enumerate(audios[pre_buffer:]):
         if conn.client_abort:
+            logger.bind(tag=TAG).debug("播放中断")
             return
 
         # 计算预期发送时间
         expected_time = start_time + (play_position / 1000)
         current_time = time.perf_counter()
         delay = expected_time - current_time
+        
+        # 限制最大延迟，避免延迟过大
+        if delay > 0.1:  # 最大延迟100ms
+            delay = 0.1
+            
         if delay > 0:
             await asyncio.sleep(delay)
 
         await conn.websocket.send(opus_packet)
-
         play_position += frame_duration
+        
+        # 每50帧打印一次进度
+        if (i + pre_buffer) % 50 == 0:
+            progress = (i + pre_buffer) / total_frames * 100
+            logger.bind(tag=TAG).debug(f"播放进度: {progress:.1f}%, 帧:{i + pre_buffer}/{total_frames}")
+    
+    # 计算实际播放持续时间
+    actual_duration = time.perf_counter() - start_time
+    expected_duration = (total_frames * frame_duration) / 1000
+    logger.bind(tag=TAG).debug(f"音频播放完成: 实际时长={actual_duration:.2f}秒, 预期时长={expected_duration:.2f}秒")
 
 
 async def send_tts_message(conn, state, text=None):
