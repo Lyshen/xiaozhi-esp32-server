@@ -25,16 +25,43 @@ class TTSProviderBase(ABC):
         try:
             max_repeat_time = 5
             text = MarkdownCleaner.clean_markdown(text)
-            while not os.path.exists(tmp_file) and max_repeat_time > 0:
-                asyncio.run(self.text_to_speak(text, tmp_file))
-                if not os.path.exists(tmp_file):
+            
+            # 临时存储返回的opus数据和持续时间
+            opus_data_result = None
+            duration_result = None
+            
+            # 尝试生成TTS
+            while max_repeat_time > 0:
+                # 调用子类的text_to_speak方法
+                result = asyncio.run(self.text_to_speak(text, tmp_file))
+                
+                # 检查是否有直接返回的opus数据（优化的服务提供商会这样做）
+                if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], list):
+                    # 直接获取opus数据和持续时间
+                    opus_data_result, duration_result = result
+                    logger.bind(tag=TAG).info(f"语音生成成功(内存处理): {text}, 帧数={len(opus_data_result)}, 时长={duration_result:.2f}秒, 重试={5-max_repeat_time}次")
+                    break
+                elif os.path.exists(tmp_file):
+                    # 传统方式：通过文件处理
+                    logger.bind(tag=TAG).info(f"语音生成成功(文件处理): {text}:{tmp_file}, 重试={5-max_repeat_time}次")
+                    break
+                else:
+                    # 两种方式都失败了
                     max_repeat_time = max_repeat_time - 1
-                    logger.bind(tag=TAG).error(f"语音生成失败: {text}:{tmp_file}，再试{max_repeat_time}次")
-
-            if max_repeat_time > 0:
-                logger.bind(tag=TAG).info(f"语音生成成功: {text}:{tmp_file}，重试{5 - max_repeat_time}次")
-
-            return tmp_file
+                    logger.bind(tag=TAG).error(f"语音生成失败: {text}:{tmp_file}, 再试{max_repeat_time}次")
+            
+            # 如果有直接返回的opus数据，优先使用
+            if opus_data_result is not None and duration_result is not None:
+                # 将opus数据临时存储在实例中，以便audio_to_opus_data可以访问
+                self._direct_opus_data = opus_data_result
+                self._direct_duration = duration_result
+                return tmp_file  # 返回文件名以保持API兼容性
+            elif max_repeat_time > 0:
+                # 传统方式：返回生成的文件路径
+                return tmp_file
+            else:
+                # 尝试次数用尽，返回None
+                return None
         except Exception as e:
             logger.bind(tag=TAG).error(f"Failed to generate TTS file: {e}")
             return None
@@ -44,13 +71,30 @@ class TTSProviderBase(ABC):
         pass
 
     def audio_to_opus_data(self, audio_file_path):
-        """音频文件转换为Opus编码"""
+        """音频文件转换为Opus编码
+        支持两种处理方式：
+        1. 如果有直接处理好的opus数据，则直接使用
+        2. 否则从文件读取并进行转换
+        """
+        # 检查是否有直接处理好的opus数据
+        if hasattr(self, '_direct_opus_data') and hasattr(self, '_direct_duration'):
+            logger.info(f"使用直接内存处理的Opus数据: 帧数={len(self._direct_opus_data)}, 时长={self._direct_duration:.2f}秒")
+            opus_data = self._direct_opus_data
+            duration = self._direct_duration
+            
+            # 使用后清除临时存储的数据，避免内存泄漏
+            delattr(self, '_direct_opus_data')
+            delattr(self, '_direct_duration')
+            
+            return opus_data, duration
+            
+        # 如果没有直接处理好的数据，则从文件读取并进行转换
+        logger.debug(f"开始从文件处理音频: {audio_file_path}")
+        
         # 获取文件后缀名
         file_type = os.path.splitext(audio_file_path)[1]
         if file_type:
             file_type = file_type.lstrip('.')
-
-        logger.debug(f"开始处理音频文件: {audio_file_path}")
             
         # 读取音频文件，-nostdin 参数：不要从标准输入读取数据，否则FFmpeg会阻塞
         audio = AudioSegment.from_file(audio_file_path, format=file_type, parameters=["-nostdin"])
@@ -98,6 +142,6 @@ class TTSProviderBase(ABC):
             opus_datas.append(opus_data)
         
         # 打印详细的调试信息
-        logger.info(f"Opus编码完成: 帧数={len(opus_datas)}, 最大帧大小={max_buffer_size}字节, 采样率={output_sample_rate}Hz, 帧长={frame_duration}ms")
+        logger.info(f"Opus编码完成(文件处理): 帧数={len(opus_datas)}, 最大帧大小={max_buffer_size}字节, 采样率={output_sample_rate}Hz, 帧长={frame_duration}ms")
         
         return opus_datas, duration
