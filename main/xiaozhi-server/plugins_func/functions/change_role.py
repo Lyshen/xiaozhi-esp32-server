@@ -76,36 +76,53 @@ change_role_function_desc = {
 @register_function('change_role', change_role_function_desc, ToolType.CHANGE_SYS_PROMPT)
 def change_role(conn, role: str, role_name: str):
     """切换角色"""
+    logger.bind(tag=TAG).info(f"[意图识别] 识别到切换角色意图: 角色={role}, 角色名字={role_name}")
+    
     # 优先使用角色存储模块
     if use_role_storage:
         try:
             # 通过名称获取角色
+            logger.bind(tag=TAG).info(f"[角色查找] 尝试在存储中查找角色: {role}")
             role_id, role_data = role_storage.get_role_by_name(role)
+            logger.bind(tag=TAG).info(f"[角色查找结果] 角色ID={role_id}, 找到={role_data is not None}")
+            
             if role_data:
+                logger.bind(tag=TAG).info(f"[角色切换] 找到角色数据: {role_data.get('name')}, 开始应用角色参数")
                 new_prompt = role_data["prompt"].replace("{{assistant_name}}", role_name)
+                logger.bind(tag=TAG).info(f"[系统提示词] 生成新的系统提示词, 长度: {len(new_prompt)}")
                 conn.change_system_prompt(new_prompt)
                 
                 # 如果角色有指定语音，也可以切换TTS语音
                 if "voice" in role_data and role_data["voice"]:
                     try:
+                        logger.bind(tag=TAG).info(f"[语音切换] 尝试切换到指定语音: {role_data['voice']}")
                         if hasattr(conn, 'change_tts_voice'):
                             conn.change_tts_voice(role_data["voice"])
+                            logger.bind(tag=TAG).info(f"[语音切换] 切换语音成功")
                     except Exception as e:
-                        logger.bind(tag=TAG).error(f"切换语音失败: {e}")
+                        logger.bind(tag=TAG).error(f"[语音切换] 切换语音失败: {e}")
                 
-                logger.bind(tag=TAG).info(f"准备切换角色:{role},角色名字:{role_name}")
+                logger.bind(tag=TAG).info(f"[角色切换成功] 完成切换角色: {role}, 角色名字: {role_name}")
                 res = f"切换角色成功,我是{role}{role_name}"
                 return ActionResponse(action=Action.RESPONSE, result="切换角色已处理", response=res)
         except Exception as e:
-            logger.bind(tag=TAG).error(f"使用角色存储模块失败: {e}")
+            logger.bind(tag=TAG).error(f"[角色存储失败] 使用角色存储模块失败: {e}")
             # 如果角色存储模块失败，回退到使用prompts字典
+            logger.bind(tag=TAG).info(f"[回退机制] 将使用备用prompts字典切换角色")
     
     # 回退到使用prompts字典
+    logger.bind(tag=TAG).info(f"[字典查找] 在prompts字典中尝试查找角色: {role}")
+    logger.bind(tag=TAG).info(f"[字典数据] 当前prompts字典包含的角色: {list(prompts.keys())}")
+    
     if role not in prompts:
+        logger.bind(tag=TAG).error(f"[字典查找失败] 角色不存在于备用字典中: {role}")
         return ActionResponse(action=Action.RESPONSE, result="切换角色失败", response="不支持的角色")
     
+    logger.bind(tag=TAG).info(f"[字典查找成功] 在备用字典中找到角色: {role}")
     new_prompt = prompts[role].replace("{{assistant_name}}", role_name)
+    logger.bind(tag=TAG).info(f"[备用字典] 生成新的系统提示词, 长度: {len(new_prompt)}")
     conn.change_system_prompt(new_prompt)
-    logger.bind(tag=TAG).info(f"准备切换角色:{role},角色名字:{role_name}")
+    
+    logger.bind(tag=TAG).info(f"[角色切换成功(备用)] 完成切换角色: {role}, 角色名字: {role_name}")
     res = f"切换角色成功,我是{role}{role_name}"
     return ActionResponse(action=Action.RESPONSE, result="切换角色已处理", response=res)

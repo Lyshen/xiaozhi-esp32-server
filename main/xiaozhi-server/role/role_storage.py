@@ -45,9 +45,25 @@ class RoleStorage:
             if os.path.exists(self.storage_path):
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.roles = data.get('roles', {})
-                    self.default_role_id = data.get('default_role_id')
-                logger.bind(tag=TAG).info(f"从 {self.storage_path} 加载了 {len(self.roles)} 个角色")
+                    # 兼容两种格式：
+                    # 1. 直接字典形式：{"role_id": {...}, "role_id2": {...}}
+                    # 2. 带roles和default_role_id的形式：{"roles": {...}, "default_role_id": "..."}
+                    if 'roles' in data:
+                        logger.bind(tag=TAG).info("使用带roles结构的JSON格式加载角色数据")
+                        self.roles = data.get('roles', {})
+                        self.default_role_id = data.get('default_role_id')
+                    else:
+                        logger.bind(tag=TAG).info("使用直接字典的JSON格式加载角色数据")
+                        self.roles = data
+                        # 查找集默认角色
+                        for role_id, role_data in self.roles.items():
+                            if role_data.get("is_default", False):
+                                self.default_role_id = role_id
+                                break
+                                
+                    logger.bind(tag=TAG).info(f"从 {self.storage_path} 加载了 {len(self.roles)} 个角色")
+                    logger.bind(tag=TAG).info(f"角色列表: {list(self.roles.keys())}")
+                    logger.bind(tag=TAG).info(f"默认角色ID: {self.default_role_id}")
             else:
                 logger.bind(tag=TAG).info(f"角色数据文件 {self.storage_path} 不存在，将创建默认角色")
                 self._initialize_default_roles()
@@ -96,13 +112,17 @@ class RoleStorage:
     def _save_roles(self):
         """保存角色数据到文件"""
         try:
-            data = {
-                "roles": self.roles,
-                "default_role_id": self.default_role_id
-            }
+            # 直接保存角色字典，不再使用roles嵌套结构
+            # 如果有默认角色，确保它的is_default属性设置为True
+            if self.default_role_id:
+                for role_id, role_data in self.roles.items():
+                    role_data["is_default"] = (role_id == self.default_role_id)
+            
             with open(self.storage_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.bind(tag=TAG).info(f"角色数据已保存到 {self.storage_path}")
+                json.dump(self.roles, f, ensure_ascii=False, indent=2)
+                
+            logger.bind(tag=TAG).info(f"角色数据已保存到 {self.storage_path}, 共{len(self.roles)}个角色")
+            logger.bind(tag=TAG).info(f"默认角色ID: {self.default_role_id}")
         except Exception as e:
             logger.bind(tag=TAG).error(f"保存角色数据失败: {e}")
     
