@@ -1,9 +1,24 @@
 from plugins_func.register import register_function,ToolType, ActionResponse, Action
 from config.logger import setup_logging
+import os
+import sys
+
+# 添加项目根目录到sys.path，确保能够导入role模块
+base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if base_dir not in sys.path:
+    sys.path.append(base_dir)
+
+# 尝试导入角色存储模块
+try:
+    from role.role_storage import RoleStorage
+    use_role_storage = True
+except ImportError:
+    use_role_storage = False
 
 TAG = __name__
 logger = setup_logging()
 
+# 保留原有的prompts字典作为备份，确保向后兼容性
 prompts = {
     "英语老师":"""我是一个叫{{assistant_name}}(Lily)的英语老师，我会讲中文和英文，发音标准。
 如果你没有英文名，我会给你起一个英文名。
@@ -23,33 +38,72 @@ prompts = {
 我希望能与你一同踏上探索这个神奇世界的旅程，分享发现的乐趣，解决遇到的难题，一起用好奇心和智慧去揭开那些未知的面纱。
 无论是去了解远古的文明，还是去探讨未来的科技，我相信我们能一起找到答案，甚至提出更多有趣的问题。"""
 }
+
+# 如果成功导入了角色存储模块，则使用它来获取角色列表
+if use_role_storage:
+    try:
+        role_storage = RoleStorage.get_instance()
+        # 动态生成角色列表描述
+        available_roles = ", ".join([role_data.get("name", role_id) for role_id, role_data in role_storage.get_all_roles().items()])
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"获取角色列表失败: {e}")
+        available_roles = "机车女友, 英语老师, 好奇小男孩"
+else:
+    available_roles = "机车女友, 英语老师, 好奇小男孩"
+
 change_role_function_desc = {
-                "type": "function",
-                "function": {
-                    "name": "change_role",
-                    "description": "当用户想切换角色/模型性格/助手名字时调用,可选的角色有：[机车女友,英语老师,好奇小男孩]",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "role_name": {
-                                "type": "string",
-                                "description": "要切换的角色名字"
-                            },
-                            "role":{
-                                "type": "string",
-                                "description": "要切换的角色的职业"
-                            }
-                        },
-                        "required": ["role","role_name"]
-                    }
+    "type": "function",
+    "function": {
+        "name": "change_role",
+        "description": f"当用户想切换角色/模型性格/助手名字时调用,可选的角色有：[{available_roles}]",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string",
+                    "description": "要切换的角色名字"
+                },
+                "role":{
+                    "type": "string",
+                    "description": "要切换的角色的职业"
                 }
-            }
+            },
+            "required": ["role","role_name"]
+        }
+    }
+}
 
 @register_function('change_role', change_role_function_desc, ToolType.CHANGE_SYS_PROMPT)
 def change_role(conn, role: str, role_name: str):
     """切换角色"""
+    # 优先使用角色存储模块
+    if use_role_storage:
+        try:
+            # 通过名称获取角色
+            role_id, role_data = role_storage.get_role_by_name(role)
+            if role_data:
+                new_prompt = role_data["prompt"].replace("{{assistant_name}}", role_name)
+                conn.change_system_prompt(new_prompt)
+                
+                # 如果角色有指定语音，也可以切换TTS语音
+                if "voice" in role_data and role_data["voice"]:
+                    try:
+                        if hasattr(conn, 'change_tts_voice'):
+                            conn.change_tts_voice(role_data["voice"])
+                    except Exception as e:
+                        logger.bind(tag=TAG).error(f"切换语音失败: {e}")
+                
+                logger.bind(tag=TAG).info(f"准备切换角色:{role},角色名字:{role_name}")
+                res = f"切换角色成功,我是{role}{role_name}"
+                return ActionResponse(action=Action.RESPONSE, result="切换角色已处理", response=res)
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"使用角色存储模块失败: {e}")
+            # 如果角色存储模块失败，回退到使用prompts字典
+    
+    # 回退到使用prompts字典
     if role not in prompts:
         return ActionResponse(action=Action.RESPONSE, result="切换角色失败", response="不支持的角色")
+    
     new_prompt = prompts[role].replace("{{assistant_name}}", role_name)
     conn.change_system_prompt(new_prompt)
     logger.bind(tag=TAG).info(f"准备切换角色:{role},角色名字:{role_name}")
