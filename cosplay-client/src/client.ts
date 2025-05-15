@@ -163,9 +163,10 @@ export class CosplayClient {
         this.listeningState = ListeningState.LISTENING;
         this.eventEmitter.emit(ClientEvent.SPEECH_START);
         
-        // 发送listen消息
+        // 发送listen消息，增加state字段匹配服务器期望的格式
         await this.connection.sendText(JSON.stringify({
           type: MessageType.LISTEN,
+          state: 'start',  // 服务器期望的开始状态
           mode: 'auto'
         }));
       }
@@ -189,6 +190,15 @@ export class CosplayClient {
       this.audioRecorder.stop();
       this.listeningState = ListeningState.PROCESSING;
       this.eventEmitter.emit(ClientEvent.SPEECH_END);
+      
+      // 发送停止录音消息
+      this.connection.sendText(JSON.stringify({
+        type: MessageType.LISTEN,
+        state: 'stop',  // 服务器期望的停止状态
+        mode: 'auto'
+      })).catch(error => {
+        console.error('Failed to send stop listening message:', error);
+      });
       
       // 让处理完成后恢复idle状态
       setTimeout(() => {

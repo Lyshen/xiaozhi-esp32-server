@@ -1,5 +1,6 @@
 import { AudioConfig } from '../../../types';
 import { AudioRecorder } from '../../types';
+import { OpusEncoder } from './opus-encoder';
 
 /**
  * Web平台音频录制器实现
@@ -14,6 +15,8 @@ export class WebAudioRecorder implements AudioRecorder {
   private isPaused: boolean = false;
   private audioConfig: AudioConfig;
   private audioCallback: ((data: ArrayBuffer) => void) | null = null;
+  private opusEncoder: OpusEncoder | null = null;
+  private encoderReady: boolean = false;
 
   /**
    * 构造函数
@@ -26,6 +29,35 @@ export class WebAudioRecorder implements AudioRecorder {
       channels: config.channels || 1,
       frameDuration: config.frameDuration || 20
     };
+    
+    // 如果格式是Opus，初始化Opus编码器
+    if (this.audioConfig.format === 'opus') {
+      this.initOpusEncoder();
+    }
+  }
+  
+  /**
+   * 初始化Opus编码器
+   */
+  private initOpusEncoder(): void {
+    try {
+      this.opusEncoder = new OpusEncoder(this.audioConfig, () => {
+        this.encoderReady = true;
+        console.log('Opus encoder initialized successfully');
+      });
+      
+      if (this.opusEncoder) {
+        // 设置编码数据回调
+        this.opusEncoder.setEncodedCallback((data: ArrayBuffer) => {
+          if (this.audioCallback) {
+            this.audioCallback(data);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Failed to initialize Opus encoder:', error);
+      this.opusEncoder = null;
+    }
   }
 
   /**
@@ -134,7 +166,7 @@ export class WebAudioRecorder implements AudioRecorder {
    * @param event 音频处理事件
    */
   private handleAudioProcess(event: AudioProcessingEvent): void {
-    if (!this.isActive || this.isPaused || !this.audioCallback) {
+    if (!this.isActive || this.isPaused) {
       return;
     }
     
@@ -145,13 +177,20 @@ export class WebAudioRecorder implements AudioRecorder {
     if (this.audioConfig.format === 'pcm') {
       // 将Float32Array转换为16位PCM格式的Int16Array
       const pcmData = this.floatTo16BitPCM(inputData);
-      this.audioCallback(pcmData.buffer);
+      if (this.audioCallback) {
+        this.audioCallback(pcmData.buffer);
+      }
     } else if (this.audioConfig.format === 'opus') {
-      // 注意：这里我们只是将原始数据传递出去
-      // 实际项目中，您需要添加Opus编码的逻辑，可能需要使用WebAssembly库实现
-      // 由于Opus编码器的复杂性，此处先将原始PCM数据传递出去
-      const pcmData = this.floatTo16BitPCM(inputData);
-      this.audioCallback(pcmData.buffer);
+      // 使用Opus编码器编码数据
+      if (this.opusEncoder) {
+        // 编码器内部会调用回调发送数据
+        this.opusEncoder.encode(inputData);
+      } else if (this.audioCallback) {
+        // 如果Opus编码器不可用，回退到PCM
+        console.warn('Opus encoder not available, falling back to PCM');
+        const pcmData = this.floatTo16BitPCM(inputData);
+        this.audioCallback(pcmData.buffer);
+      }
     }
   }
 
@@ -214,6 +253,13 @@ export class WebAudioRecorder implements AudioRecorder {
     // 关闭AudioContext
     if (this.audioContext && this.audioContext.state !== 'closed') {
       this.audioContext.close();
+    }
+    
+    // 清理Opus编码器
+    if (this.opusEncoder) {
+      this.opusEncoder.destroy();
+      this.opusEncoder = null;
+      this.encoderReady = false;
     }
     
     // 重置所有对象
