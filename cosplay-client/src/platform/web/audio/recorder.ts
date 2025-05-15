@@ -1,6 +1,7 @@
 import { AudioConfig } from '../../../types';
 import { AudioRecorder } from '../../types';
 import { OpusEncoder } from './opus-encoder';
+import { KazukiOpusEncoder } from './kazuki-opus-encoder';
 
 /**
  * Web平台音频录制器实现
@@ -15,7 +16,7 @@ export class WebAudioRecorder implements AudioRecorder {
   private isPaused: boolean = false;
   private audioConfig: AudioConfig;
   private audioCallback: ((data: ArrayBuffer) => void) | null = null;
-  private opusEncoder: OpusEncoder | null = null;
+  private opusEncoder: OpusEncoder | KazukiOpusEncoder | null = null;
   private encoderReady: boolean = false;
 
   /**
@@ -41,10 +42,20 @@ export class WebAudioRecorder implements AudioRecorder {
    */
   private initOpusEncoder(): void {
     try {
-      this.opusEncoder = new OpusEncoder(this.audioConfig, () => {
-        this.encoderReady = true;
-        console.log('Opus encoder initialized successfully');
-      });
+      // 先尝试使用KazukiOpusEncoder
+      try {
+        this.opusEncoder = new KazukiOpusEncoder(this.audioConfig, () => {
+          this.encoderReady = true;
+          console.log('Kazuki Opus encoder initialized successfully');
+        });
+      } catch (kazukiError) {
+        // 如果KazukiOpusEncoder初始化失败，回退到网页版OpusEncoder
+        console.warn('Failed to initialize Kazuki Opus encoder, falling back to standard encoder:', kazukiError);
+        this.opusEncoder = new OpusEncoder(this.audioConfig, () => {
+          this.encoderReady = true;
+          console.log('Standard Opus encoder initialized successfully');
+        });
+      }
       
       if (this.opusEncoder) {
         // 设置编码数据回调
@@ -55,7 +66,7 @@ export class WebAudioRecorder implements AudioRecorder {
         });
       }
     } catch (error) {
-      console.error('Failed to initialize Opus encoder:', error);
+      console.error('Failed to initialize any Opus encoder:', error);
       this.opusEncoder = null;
     }
   }
@@ -173,23 +184,33 @@ export class WebAudioRecorder implements AudioRecorder {
     const inputBuffer = event.inputBuffer;
     const inputData = inputBuffer.getChannelData(0); // 获取第一个声道的数据
     
+    // 深度调试日志
+    console.log(`Processing audio: format=${this.audioConfig.format}, samples=${inputData.length}, hasEncoder=${!!this.opusEncoder}, encoderReady=${this.encoderReady}`);
+    
     // 根据音频格式处理数据
     if (this.audioConfig.format === 'pcm') {
       // 将Float32Array转换为16位PCM格式的Int16Array
       const pcmData = this.floatTo16BitPCM(inputData);
       if (this.audioCallback) {
+        console.log('Sending PCM data to callback, size:', pcmData.length);
         this.audioCallback(pcmData.buffer);
       }
     } else if (this.audioConfig.format === 'opus') {
       // 使用Opus编码器编码数据
-      if (this.opusEncoder) {
+      if (this.opusEncoder && this.encoderReady) {
+        console.log('Sending data to Opus encoder, type:', this.opusEncoder.constructor.name);
         // 编码器内部会调用回调发送数据
         this.opusEncoder.encode(inputData);
-      } else if (this.audioCallback) {
-        // 如果Opus编码器不可用，回退到PCM
-        console.warn('Opus encoder not available, falling back to PCM');
+      } else {
+        // 如果Opus编码器不可用或未就绪，回退到PCM
+        console.warn('Opus encoder not available or not ready, falling back to PCM', {
+          hasEncoder: !!this.opusEncoder,
+          encoderReady: this.encoderReady
+        });
         const pcmData = this.floatTo16BitPCM(inputData);
-        this.audioCallback(pcmData.buffer);
+        if (this.audioCallback) {
+          this.audioCallback(pcmData.buffer);
+        }
       }
     }
   }

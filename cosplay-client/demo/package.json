@@ -10,9 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "cosplay-client": "file:../",
+    "libopus.js": "^0.0.1",
+    "opus-media-recorder": "^0.8.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "cosplay-client": "file:../"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",

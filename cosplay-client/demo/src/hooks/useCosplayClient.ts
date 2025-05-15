@@ -42,9 +42,10 @@ export function useCosplayClient({
           delay: 2000,
         },
         audioConfig: {
-          format: 'pcm',
+          format: 'opus', // 使用Opus格式与Python客户端保持一致
           sampleRate: 16000,
           channels: 1,
+          frameDuration: 60, // 使用 60ms 帧时长，与 Python 客户端保持一致
         },
       });
       
