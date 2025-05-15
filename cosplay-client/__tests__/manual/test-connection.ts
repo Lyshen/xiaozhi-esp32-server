@@ -17,7 +17,7 @@ import { ClientEvent, ConnectionState, MessageType } from '../../src/types';
 
 // 创建客户端实例
 const client = new CosplayClient({
-  serverUrl: 'ws://localhost:8080/ws', // 请根据实际服务器地址修改
+  serverUrl: 'ws://localhost:8000/ws', // 使用正确的8000端口连接WebSocket服务
   deviceId: 'test-device',
   clientId: 'cosplay-client-test',
   reconnect: {
@@ -34,7 +34,7 @@ const client = new CosplayClient({
 
 // 监听连接事件
 client.on(ClientEvent.CONNECTED, () => {
-  console.log(`连接成功: ${ConnectionState[client.getConnectionState()]}`);
+  console.log(`连接成功: ${client.getConnectionState()}`);
   
   console.log('连接成功，将在3秒后测试音频功能...');
   
@@ -72,7 +72,7 @@ client.on(ClientEvent.CONNECTED, () => {
 
 // 监听断开连接事件
 client.on(ClientEvent.DISCONNECTED, () => {
-  console.log(`连接已断开: ${ConnectionState[client.getConnectionState()]}`);
+  console.log(`连接已断开: ${client.getConnectionState()}`);
 });
 
 // 我们不再使用HELLO事件，因为这个事件在实际API中可能不存在

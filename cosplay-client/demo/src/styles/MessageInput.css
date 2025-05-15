@@ -1,0 +1,59 @@
+.message-input-form {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.message-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.message-input:focus {
+  border-color: #2196f3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.1);
+}
+
+.message-input:disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+  color: #999;
+}
+
+.send-button {
+  padding: 0 20px;
+  background-color: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.send-button:hover:not(:disabled) {
+  background-color: #1976d2;
+}
+
+.send-button:disabled {
+  background-color: #bbdefb;
+  cursor: not-allowed;
+}
+
+/* 响应式设计 */
+@media (max-width: 600px) {
+  .message-input-form {
+    flex-direction: column;
+  }
+  
+  .send-button {
+    align-self: flex-end;
+    padding: 10px 20px;
+  }
+}
