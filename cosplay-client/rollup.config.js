@@ -2,6 +2,7 @@ import resolve from '@rollup/plugin-node-resolve';
 import commonjs from '@rollup/plugin-commonjs';
 import typescript from '@rollup/plugin-typescript';
 import { terser } from 'rollup-plugin-terser';
+import nodePolyfills from 'rollup-plugin-polyfill-node';
 import pkg from './package.json';
 
 export default [
@@ -12,10 +13,17 @@ export default [
       name: 'CosplayClient',
       file: pkg.browser,
       format: 'umd',
-      sourcemap: true
+      sourcemap: true,
+      globals: {
+        events: 'EventEmitter'
+      }
     },
     plugins: [
-      resolve(),
+      nodePolyfills(),
+      resolve({
+        browser: true,
+        preferBuiltins: false
+      }),
       commonjs(),
       typescript({ tsconfig: './tsconfig.json' }),
       terser()
