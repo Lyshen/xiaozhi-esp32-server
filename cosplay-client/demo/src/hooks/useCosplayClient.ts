@@ -72,16 +72,24 @@ export function useCosplayClient({
     
     const client = clientRef.current;
     
-    // 连接状态变化
+    // 连接状态变化 - 仅更新状态，不添加到对话历史
     client.on(ClientEvent.CONNECTED, () => {
       setConnectionState(ConnectionState.CONNECTED);
-      addSystemMessage('已连接到服务器');
+      // 不要在对话框中添加连接状态消息
+      // addSystemMessage('已连接到服务器');
+      
+      // 可以在控制台记录连接状态，但不影响UI
+      console.log('已连接到服务器');
     });
     
     client.on(ClientEvent.DISCONNECTED, () => {
       setConnectionState(ConnectionState.DISCONNECTED);
       setIsRecording(false);
-      addSystemMessage('已断开连接');
+      // 不要在对话框中添加连接状态消息
+      // addSystemMessage('已断开连接');
+      
+      // 可以在控制台记录连接状态，但不影响UI
+      console.log('已断开连接');
     });
     
     // 语音识别结果
@@ -164,30 +172,40 @@ export function useCosplayClient({
   // 开始/停止录音
   const startRecording = useCallback(() => {
     if (clientRef.current && connectionState === ConnectionState.CONNECTED) {
-      // 假设客户端有开始录音的方法
-      // 根据实际API调整
       try {
-        // 客户端在这里可能会有startRecording、startAudioCapture或类似的方法
-        // clientRef.current.startRecording();
-        setIsRecording(true);
+        // 调用CosplayClient的startListening方法开始录音
+        clientRef.current.startListening()
+          .then(success => {
+            if (success) {
+              setIsRecording(true);
+              console.log('开始录音成功');
+            } else {
+              console.error('开始录音失败');
+            }
+          })
+          .catch(error => {
+            console.error('开始录音错误:', error);
+          });
       } catch (error) {
-        console.error('Failed to start recording:', error);
+        console.error('开始录音失败:', error);
       }
+    } else {
+      console.log('无法录音: 未连接或客户端未初始化');
     }
   }, [connectionState]);
   
   const stopRecording = useCallback(() => {
     if (clientRef.current && isRecording) {
-      // 假设客户端有停止录音的方法
-      // 根据实际API调整
       try {
-        // clientRef.current.stopRecording();
+        // 调用CosplayClient的stopListening方法停止录音
+        clientRef.current.stopListening();
         setIsRecording(false);
+        console.log('停止录音');
       } catch (error) {
-        console.error('Failed to stop recording:', error);
+        console.error('停止录音失败:', error);
       }
     }
-  }, [isRecording]);
+  }, [isRecording, clientRef]);
   
   // 发送文本消息
   const sendTextMessage = useCallback((text: string) => {

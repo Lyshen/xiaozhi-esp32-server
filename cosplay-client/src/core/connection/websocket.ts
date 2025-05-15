@@ -131,7 +131,22 @@ export class WebSocketConnection implements Connection {
   private createWebSocketConnection(): Promise<boolean> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.config.serverUrl);
+        // 构建包含设备ID和客户端ID的WebSocket URL
+        let url = this.config.serverUrl;
+        const hasParams = url.includes('?');
+        const separator = hasParams ? '&' : '?';
+        
+        // 添加device-id参数
+        if (this.config.deviceId) {
+          url += `${separator}device-id=${encodeURIComponent(this.config.deviceId)}`;
+        }
+        
+        // 添加client-id参数
+        if (this.config.clientId) {
+          url += `${url.includes('?') ? '&' : '?'}client-id=${encodeURIComponent(this.config.clientId)}`;
+        }
+        
+        this.ws = new WebSocket(url);
 
         this.ws.onopen = () => {
           this.onConnectionOpen();
