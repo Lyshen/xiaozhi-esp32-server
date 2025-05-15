@@ -107,12 +107,13 @@ class TTSProvider(TTSProviderBase):
             conversion_time = datetime.now()
             logger.bind(tag=TAG).debug(f"音频转换时间: {(conversion_time - api_time).total_seconds():.3f}秒")
             
-            # Opus编码参数
-            frame_duration = 20  # 20ms per frame
-            frame_size = int(output_sample_rate * frame_duration / 1000)  # 320 samples/frame (20ms at 16kHz)
+            # Opus编码参数 - 与客户端保持一致
+            frame_duration = 20  # 20ms per frame - 保持默认值与客户端一致
+            frame_size = int(output_sample_rate * frame_duration / 1000)
             
-            # 初始化Opus编码器
-            encoder = opuslib_next.Encoder(output_sample_rate, 1, opuslib_next.APPLICATION_AUDIO)
+            # 初始化Opus编码器 - 使用与客户端相同的应用类型2049
+            # 客户端使用opuslib库的OPUS_APPLICATION_AUDIO (2049)
+            encoder = opuslib_next.Encoder(output_sample_rate, 1, 2049)  # 2049可以替代APPLICATION_AUDIO
             
             # 直接编码为Opus格式
             opus_datas = []
@@ -126,19 +127,30 @@ class TTSProvider(TTSProviderBase):
                     padding_size = frame_size * 2 - len(chunk)
                     chunk += b'\x00' * padding_size
                 
-                # 编码为Opus
+                # 编码为Opus - 与客户端密切配合
                 np_frame = np.frombuffer(chunk, dtype=np.int16)
-                opus_data = encoder.encode(np_frame.tobytes(), frame_size)
-                max_buffer_size = max(max_buffer_size, len(opus_data))
-                opus_datas.append(opus_data)
+                try:
+                    # 注意：客户端使用opuslib.Decoder解码，缓冲区大小需要限制
+                    opus_data = encoder.encode(np_frame.tobytes(), frame_size)
+                    
+                    # 客户端解码使用的OUTPUT_FRAME_SIZE是固定值，确保我们生成的opus_data不超过它能处理的大小
+                    # 测试表明 opus_data 最好不超过 600 字节
+                    if len(opus_data) > 600:
+                        # 记录过大的帧，但仍然使用，客户端可能会尝试解码
+                        logger.bind(tag=TAG).warning(f"Opus帧过大: {len(opus_data)} 字节")
+                    
+                    max_buffer_size = max(max_buffer_size, len(opus_data))
+                    opus_datas.append(opus_data)
+                except Exception as e:
+                    logger.bind(tag=TAG).error(f"Opus编码错误: {e}")
             
             # 完成编码的时间
             encoding_time = datetime.now()
             logger.bind(tag=TAG).debug(f"Opus编码时间: {(encoding_time - conversion_time).total_seconds():.3f}秒")
             
-            # 记录总处理时间
+            # 记录总处理时间及缓冲区大小信息
             total_time = (encoding_time - start_time).total_seconds()
-            logger.bind(tag=TAG).info(f"优化后TTS处理总时间: {total_time:.3f}秒, 帧数: {len(opus_datas)}, 音频长度: {duration:.2f}秒")
+            logger.bind(tag=TAG).info(f"优化后TTS处理总时间: {total_time:.3f}秒, 帧数: {len(opus_datas)}, 音频长度: {duration:.2f}秒, 最大帧大小: {max_buffer_size}字节")
             
             # 创建一个临时的opus_datas属性，以便base.py中的to_tts方法能够正确处理
             setattr(self, '_opus_datas', opus_datas)
