@@ -85,15 +85,21 @@ export class KazukiOpusEncoder {
         else if (event.data.command === 'encode' && event.data.buffers && Array.isArray(event.data.buffers)) {
           console.log('Received direct encoderWorker response with buffers');
           
-          // 创建一个有效的Opus数据包（强制添加Opus头）
-          // Opus头是必需的，以便服务器能够正确解码
-          const opusHeader = new Uint8Array([0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]); // "OpusHead"
-          const testPacket = new Uint8Array([0xF8, 0xFF, 0xFE]); // 简单的Opus包
-          
-          // 使用测试数据作为临时解决方案
+          // 使用实际的编码数据
           if (this.encodedCallback) {
-            console.log('Sending test opus packet to server');
-            this.encodedCallback(testPacket.buffer);
+            // 尝试获取原始的编码数据
+            if (event.data.buffers.length > 0) {
+              // 从中提取第一个可用的buffer
+              const bufferData = event.data.buffers[0];
+              if (bufferData) {
+                console.log('Found actual encoded buffer, sending to server');
+                this.encodedCallback(bufferData);
+              } else {
+                console.warn('Buffer data is empty, cannot forward to server');
+              }
+            } else {
+              console.warn('No buffers available in encoderWorker response');
+            }
           }
         }
         // 未知格式消息处理

@@ -45,7 +45,10 @@
     "typescript": "^4.7.3"
   },
   "dependencies": {
-    "events": "^3.3.0"
+    "events": "^3.3.0",
+    "libopus.js": "^0.0.1",
+    "opus-media-recorder": "^0.8.0",
+    "opus-recorder": "^8.0.5"
   },
   "files": [
     "dist"
