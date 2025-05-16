@@ -1,0 +1,118 @@
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: 'xiaozhi-server'
+  namespace: xrobot-cloud
+  labels:
+    app.kubernetes.io/version: v1
+  annotations:
+    servicemesh.kubesphere.io/enabled: 'false'
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: xiaozhi
+  addOwnerRef: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xiaozhi-server-service
+  namespace: xrobot-cloud
+  labels:
+    app: xiaozhi-server
+    app.kubernetes.io/part-of: xiaozhi
+    app.kubernetes.io/version: v1
+spec:
+  selector:
+    app: xiaozhi-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: websocket
+  - port: 8081
+    targetPort: 8081
+    name: api
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xiaozhi-server
+  namespace: xrobot-cloud
+  labels:
+    app: xiaozhi-server
+    app.kubernetes.io/part-of: xiaozhi
+    app.kubernetes.io/version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xiaozhi-server
+  template:
+    metadata:
+      labels:
+        app: xiaozhi-server
+        app.kubernetes.io/part-of: xiaozhi
+        app.kubernetes.io/version: v1
+    spec:
+      containers:
+      - name: xiaozhi-server
+        image: ghcr.io/lyshen/xiaozhi-esp32-server:k8s-amd64
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: websocket
+        - containerPort: 8081
+          name: api
+        env:
+        - name: TZ
+          value: "Asia/Shanghai"
+        # 其他环境变量通过配置文件提供
+        volumeMounts:
+        - name: config-volume
+          mountPath: /opt/xiaozhi-esp32-server/data/.config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config-volume
+        configMap:
+          name: xiaozhi-config-map
+          items:
+          - key: config.yaml
+            path: config.yaml
+      # 镜像拉取密钥
+      imagePullSecrets:
+      - name: github-registry
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xiaozhi-server-ingress
+  namespace: xrobot-cloud
+  labels:
+    app.kubernetes.io/part-of: xiaozhi
+    app.kubernetes.io/version: v1
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    external-dns.alpha.kubernetes.io/hostname: "xiaozhi.qiniu.io"
+    external-dns.alpha.kubernetes.io/ttl: "60"
+spec:
+  rules:
+  - host: xiaozhi.qiniu.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: xiaozhi-server-service
+            port:
+              number: 8000
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: xiaozhi-server-service
+            port:
+              number: 8081
