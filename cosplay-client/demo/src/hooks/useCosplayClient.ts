@@ -32,6 +32,9 @@ export function useCosplayClient({
   // 初始化客户端
   useEffect(() => {
     if (!clientRef.current) {
+      console.log('UseCosplayClient: Creating client with WebRTC enabled');
+      
+      // 创建CosplayClient实例
       clientRef.current = new CosplayClient({
         serverUrl,
         deviceId,
@@ -42,10 +45,16 @@ export function useCosplayClient({
           delay: 2000,
         },
         audioConfig: {
-          format: 'opus', // 使用Opus格式与Python客户端保持一致
+          format: 'pcm', // 切换为PCM格式，配合WebRTC使用
           sampleRate: 16000,
           channels: 1,
-          frameDuration: 60, // 使用 60ms 帧时长，与 Python 客户端保持一致
+          frameDuration: 20, // 使用更短的帧长度以减少延迟
+          // WebRTC相关配置 - 明确指定为true
+          useWebRTC: true, // 启用WebRTC
+          webrtcSignalingUrl: 'wss://xiaozhi.qiniu.io/ws/signaling', // 信令服务器地址
+          echoCancellation: true, // 启用回声消除
+          noiseSuppression: true, // 启用噪声抑制
+          autoGainControl: true, // 启用自动增益控制
         },
       });
       

@@ -26,6 +26,16 @@ export interface AudioConfig {
   channels?: number;
   /** 帧长度（毫秒），默认为20 */
   frameDuration?: number;
+  /** 是否使用WebRTC，默认为false */
+  useWebRTC?: boolean;
+  /** WebRTC信令服务器URL */
+  webrtcSignalingUrl?: string;
+  /** 是否启用回声消除，默认为true */
+  echoCancellation?: boolean;
+  /** 是否启用噪声抑制，默认为true */
+  noiseSuppression?: boolean;
+  /** 是否启用自动增益控制，默认为true */
+  autoGainControl?: boolean;
 }
 
 /**
@@ -92,6 +102,16 @@ export enum ListeningState {
   IDLE = 'idle',
   LISTENING = 'listening',
   PROCESSING = 'processing'
+}
+
+/**
+ * 录音机状态
+ */
+export enum AudioRecorderState {
+  INACTIVE = 'inactive',
+  INITIALIZED = 'initialized',
+  RECORDING = 'recording',
+  PAUSED = 'paused'
 }
 
 /**
