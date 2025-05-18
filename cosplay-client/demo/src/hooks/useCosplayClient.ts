@@ -51,7 +51,7 @@ export function useCosplayClient({
           frameDuration: 20, // 使用更短的帧长度以减少延迟
           // WebRTC相关配置 - 明确指定为true
           useWebRTC: true, // 启用WebRTC
-          webrtcSignalingUrl: 'wss://xiaozhi.qiniu.io/ws/signaling', // 信令服务器地址
+          webrtcSignalingUrl: 'ws://192.168.1.80:8082/ws/signaling', // 本地测试信令服务器地址
           echoCancellation: true, // 启用回声消除
           noiseSuppression: true, // 启用噪声抑制
           autoGainControl: true, // 启用自动增益控制

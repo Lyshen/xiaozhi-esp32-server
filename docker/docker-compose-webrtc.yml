@@ -1,0 +1,31 @@
+version: '3'
+
+services:
+  xiaozhi-webrtc:
+    build:
+      context: ..
+      dockerfile: docker/dockerfiles/Dockerfile-webrtc
+    container_name: xiaozhi-webrtc-test
+    restart: unless-stopped
+    volumes:
+      # 挂载用户提供的完整配置文件
+      - ../data/.config.yaml:/opt/xiaozhi-esp32-server/data/.config.yaml:ro
+      # 挂载日志目录
+      - ../logs:/opt/xiaozhi-esp32-server/logs
+    ports:
+      # WebSocket服务器端口 (使用8001避免与现有服务冲突)
+      - "8001:8000"
+      # WebRTC信令服务器端口
+      - "8082:8082"
+    environment:
+      # 环境变量配置
+      - TZ=Asia/Shanghai
+    networks:
+      - xiaozhi-network
+    # 必要的网络设置，避免WebRTC ICE连接问题
+    # 使用主机网络模式是最简单的解决方案，但也可以使用特定网络配置
+    # network_mode: "host"
+
+networks:
+  xiaozhi-network:
+    driver: bridge

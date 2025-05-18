@@ -9,7 +9,14 @@ TAG = __name__
 logger = setup_logging()
 
 
-async def handleAudioMessage(conn, audio):
+async def handleAudioMessage(conn, audio, ws=None):
+    # 检查是否使用WebRTC处理音频
+    if hasattr(conn, 'use_webrtc') and conn.use_webrtc and conn.webrtc_module and conn.webrtc_module.should_replace_opus():
+        client_id = conn.headers.get("device-id", "unknown")
+        await conn.webrtc_module.process_audio(client_id, audio)
+        return
+        
+    # 原有的Opus处理逻辑
     if not conn.asr_server_receive:
         logger.bind(tag=TAG).debug(f"前期数据处理中，暂停接收")
         return

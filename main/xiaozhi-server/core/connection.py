@@ -42,11 +42,16 @@ class TTSException(RuntimeError):
 
 class ConnectionHandler:
     def __init__(
-        self, config: Dict[str, Any], _vad, _asr, _llm, _tts, _memory, _intent
+        self, config: Dict[str, Any], _vad, _asr, _llm, _tts, _memory, _intent, app_context=None
     ):
         self.config = copy.deepcopy(config)
         self.logger = setup_logging()
         self.auth = AuthMiddleware(config)
+        
+        # 保存应用上下文，用于获取WebRTC模块
+        self.app_context = app_context
+        self.webrtc_module = getattr(app_context, 'webrtc_module', None) if app_context else None
+        self.use_webrtc = self.webrtc_module and self.webrtc_module.is_webrtc_enabled()
 
         self.need_bind = False
         self.bind_code = None

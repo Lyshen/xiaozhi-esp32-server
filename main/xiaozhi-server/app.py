@@ -8,10 +8,23 @@ from core.websocket_server import WebSocketServer
 from core.utils.util import check_ffmpeg_installed
 from config.logger import setup_logging
 
+# 条件导入WebRTC模块
+try:
+    from webrtc import WebRTCModule
+    webrtc_available = True
+except ImportError:
+    webrtc_available = False
+
 # 设置日志记录器
 logger = setup_logging()
 TAG = __name__
 logger = logger.bind(tag=TAG)
+
+# 检查WebRTC可用性
+if webrtc_available:
+    logger.info("WebRTC模块已加载")
+else:
+    logger.warning("WebRTC模块无法加载，相关功能将不可用")
 
 # 尝试导入简单角色API服务器模块
 try:
@@ -64,6 +77,9 @@ async def main():
     check_ffmpeg_installed()
     config = load_config()
     
+    # 创建应用程序上下文
+    app_context = type('AppContext', (), {'config': config})()
+    
     # 启动角色管理API服务器（如果可用）
     if use_role_api:
         try:
@@ -77,8 +93,23 @@ async def main():
             error_trace = traceback.format_exc()
             logger.error(f"启动简单角色管理API服务器失败: {e}\n{error_trace}")
 
+        # 初始化WebRTC模块（如果配置启用）
+    webrtc_module = None
+    if webrtc_available and config.get('webrtc', {}).get('enabled', False):
+        try:
+            logger.info("正在初始化WebRTC模块...")
+            webrtc_module = WebRTCModule(app_context, config)
+            app_context.webrtc_module = webrtc_module
+            logger.info("WebRTC模块初始化完成")
+        except Exception as e:
+            error_trace = traceback.format_exc()
+            logger.error(f"初始化WebRTC模块失败: {e}\n{error_trace}")
+    
+    # 将WebRTC模块添加到app_context
+    app_context.webrtc_module = webrtc_module
+    
     # 启动 WebSocket 服务器
-    ws_server = WebSocketServer(config)
+    ws_server = WebSocketServer(config, app_context)
     ws_task = asyncio.create_task(ws_server.start())
 
     try:
@@ -86,12 +117,22 @@ async def main():
     except asyncio.CancelledError:
         print("任务被取消，清理资源中...")
     finally:
+        # 关闭WebRTC模块
+        if webrtc_module:
+            try:
+                await webrtc_module.shutdown()
+                logger.info("WebRTC模块已关闭")
+            except Exception as e:
+                logger.error(f"关闭WebRTC模块时出错: {e}")
+        
+        # 关闭WebSocket服务器
         ws_task.cancel()
         try:
             await ws_task
         except asyncio.CancelledError:
             pass
-        print("服务器已关闭，程序退出。")
+        
+        logger.info("服务器已关闭，程序退出。")
 
 
 if __name__ == "__main__":
