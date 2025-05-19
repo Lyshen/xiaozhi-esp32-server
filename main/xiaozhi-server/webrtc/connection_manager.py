@@ -8,7 +8,6 @@ WebRTC连接管理器
 
 import asyncio
 import json
-import logging
 import time
 import weakref
 import copy
@@ -18,8 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaStreamTrack
 import av
+from config.logger import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class AudioTrackProcessor(MediaStreamTrack):
     """处理音频轨道的MediaStreamTrack子类"""
@@ -177,7 +177,8 @@ class WebRTCConnection:
     # 内部辅助类 - ASR处理器
     class ASRHelper:
         def __init__(self):
-            self.logger = logging.getLogger(__name__)
+            # 使用全局日志对象
+            self.logger = logger
         
         async def speech_to_text(self, audio_data, session_id):
             """异步处理语音转文本
