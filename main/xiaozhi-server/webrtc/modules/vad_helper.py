@@ -117,7 +117,7 @@ class VADHelper:
         处理音频数据，检测是否有语音活动
         
         Args:
-            audio_data: 音频数据
+            audio_data: 音频数据（可能是PCM或Opus格式）
             
         Returns:
             tuple: (is_speech, probability)
@@ -128,27 +128,38 @@ class VADHelper:
             # 记录音频数据信息
             logger.info(f"[VAD-DEBUG] 处理音频数据: 长度={len(audio_data)}字节, 前10字节={audio_data[:10]}")
             
-            # 检查音频格式是否是PCM格式
+            # 判断是否为Opus格式
+            is_opus = False
             try:
-                # 简单检查是否是可能的音频数据
-                data_array = np.frombuffer(audio_data, dtype=np.int16)
-                mean_val = np.mean(np.abs(data_array))
-                std_val = np.std(data_array)
-                logger.info(f"[VAD-DEBUG] 音频统计: 平均振幅={mean_val:.2f}, 标准差={std_val:.2f}")
+                if audio_data.startswith(b'OggS') or audio_data.startswith(b'OpusHead'):
+                    is_opus = True
+                    logger.info("[VAD-DEBUG] 检测到Opus格式数据")
+            except:
+                # 如果无法检查前缀，假设不是Opus
+                pass
                 
-                # 检查是否为静音
-                if mean_val < 100:  # 阈值可能需要调整
-                    logger.warning(f"[VAD-DEBUG] 可能为静音数据，平均振幅过低: {mean_val:.2f}")
-            except Exception as np_err:
-                logger.warning(f"[VAD-DEBUG] 音频统计分析失败: {np_err}")
+            # 如果是PCM数据，进行统计分析
+            if not is_opus:
+                try:
+                    # 简单检查是否是可能的PCM数据
+                    data_array = np.frombuffer(audio_data, dtype=np.int16)
+                    mean_val = np.mean(np.abs(data_array))
+                    std_val = np.std(data_array)
+                    logger.info(f"[VAD-DEBUG] 音频统计: 平均振幅={mean_val:.2f}, 标准差={std_val:.2f}")
+                    
+                    # 检查是否为静音
+                    if mean_val < 100:  # 阈值可能需要调整
+                        logger.warning(f"[VAD-DEBUG] 可能为静音数据，平均振幅过低: {mean_val:.2f}")
+                except Exception as np_err:
+                    logger.warning(f"[VAD-DEBUG] 音频统计分析失败: {np_err}")
             
             # 如果音频数据太短，可能无法进行VAD判断
-            if len(audio_data) < 320:  # 最小16kHz 20ms帧为320 samples
+            if len(audio_data) < 320 and not is_opus:  # 仅对PCM数据做长度检查
                 logger.warning(f"[VAD-DEBUG] 音频数据太短: {len(audio_data)}字节")
                 return False, 0.0
                 
-            # VAD处理
-            is_speech, prob = self.vad.is_speech(audio_data)
+            # VAD处理，传递格式信息给VAD provider
+            is_speech, prob = self.vad.is_speech(audio_data, is_pcm=(not is_opus))
             logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
             return is_speech, prob
         except Exception as e:

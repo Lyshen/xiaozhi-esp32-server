@@ -38,8 +38,17 @@ class AudioFrameHandler:
             
             # 检查是否是opus格式
             if hasattr(frame.format, 'name') and frame.format.name.lower() == 'opus':
-                logger.info(f"[AUDIO-DEBUG] 检测到Opus格式，需要特殊处理")
-                # 这里可以添加特殊处理逻辑
+                logger.info(f"[AUDIO-DEBUG] 检测到Opus格式，提取原始数据")
+                # 尝试保留原始的Opus编码数据
+                try:
+                    if hasattr(frame, 'planes') and frame.planes:
+                        # 直接使用原始Opus编码数据
+                        opus_data = bytes(frame.planes[0])
+                        logger.info(f"[AUDIO-DEBUG] 成功提取Opus编码数据，长度: {len(opus_data)} 字节")
+                        return opus_data
+                except Exception as opus_err:
+                    logger.warning(f"[AUDIO-DEBUG] 提取Opus数据失败: {opus_err}，回退到PCM解码")
+                    # 如果提取失败，回退到标准PCM转换
             
             # 检查音频数据是否为空
             audio_array = frame.to_ndarray()
@@ -49,6 +58,7 @@ class AudioFrameHandler:
                 
             pcm_data = audio_array.flatten().tobytes()
             logger.info(f"[AUDIO-DEBUG] PCM转换完成，输出长度: {len(pcm_data)} 字节，前10字节: {pcm_data[:10]}")
+            # 保存原始格式信息，便于后续处理
             return pcm_data
         except Exception as e:
             logger.error(f"[AUDIO-DEBUG] 音频转换错误: {str(e)}")
@@ -80,7 +90,9 @@ class AudioFrameHandler:
             # 添加明确的日志 - 记录开始处理音频
             logger.warning(f"[SERVER-AUDIO] 接收音频包 #{counter} 来自客户端 {client_id}, 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # 1. 将音频帧转换为PCM格式 (原VAD链路需要的格式)
+                # 移除对frame进行深度复制的尝试，因为AudioFrame对象不支持深度复制
+            
+            # 1. 将音频帧转换为PCM格式 (用于音频分析和存储)
             audio_array = await self.convert_audio_to_pcm(frame)
             self.audio_bytes_counters[client_id] += len(audio_array)
             logger.warning(f"[SERVER-AUDIO] 音频转换完成，数据包 #{counter}，大小: {len(audio_array)} 字节，累计: {self.audio_bytes_counters[client_id]} 字节")
@@ -96,9 +108,19 @@ class AudioFrameHandler:
                 webrtc_connections[client_id] = conn
                 logger.warning(f"[SERVER-AUDIO] 创建新的WebRTC连接对象，客户端ID: {client_id}")
             
-            # 3. 将音频数据添加到缓冲区 - 直接添加到ASR音频列表
-            conn.asr_audio.append(audio_array)
-            logger.warning(f"[SERVER-AUDIO] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+            # 3. 将原始音频数据（可能是Opus格式）添加到ASR缓冲区
+            # 获取原始帧的数据，最可能是Opus格式
+            raw_frame = self.original_frames[client_id][-1]
+            # 尝试获取原始编码数据
+            if hasattr(raw_frame, 'planes') and raw_frame.planes:
+                # 可能是Opus编码数据
+                opus_data = bytes(raw_frame.planes[0])
+                conn.asr_audio.append(opus_data)
+                logger.warning(f"[SERVER-AUDIO] 原始音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+            else:
+                # 如果无法获取原始编码数据，使用PCM数据作为备选
+                conn.asr_audio.append(audio_array)
+                logger.warning(f"[SERVER-AUDIO] PCM音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
             
             # 4. 音频包计数器
             packet_counter = self.audio_packet_counters[client_id]
@@ -166,10 +188,24 @@ class AudioFrameHandler:
                                         conn.executor.submit(conn.chat_with_function_calling, text)
                                     else:
                                         conn.executor.submit(conn.chat, text)
+                            vad = builtins_conn.vad
+                            print("[VAD-DEBUG] 开始调用VAD识别")
+                            
+                            # 使用原始音频数据（可能是Opus格式）进行VAD检测
+                            if client_id in self.original_frames and self.original_frames[client_id]:
+                                raw_frame = self.original_frames[client_id][-1]
+                                if hasattr(raw_frame, 'planes') and raw_frame.planes:
+                                    opus_data = bytes(raw_frame.planes[0])
+                                    # 传递原始Opus数据给VAD模块
+                                    vad_result = await vad.is_vad(opus_data, builtins_conn)  # VAD检测
+                                else:
+                                    # 回退到PCM数据
+                                    vad_result = await vad.is_vad(audio_array, builtins_conn)  # VAD检测
                             else:
-                                # WebSocket不存在，保存结果到连接对象
-                                conn.last_asr_result = text
-                                logger.warning(f"[SERVER-AUDIO] WebSocket连接不存在，已保存ASR结果: {text}")
+                                # 回退到PCM数据
+                                vad_result = await vad.is_vad(audio_array, builtins_conn)  # VAD检测
+                                
+                            logger.warning(f"[SERVER-AUDIO] VAD处理链路已完成，数据包 #{counter}，结果: {vad_result}")
                         except Exception as e:
                             logger.error(f"[SERVER-AUDIO-ERROR] 处理ASR结果时发生错误: {e}")
                             logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
