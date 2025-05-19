@@ -21,7 +21,7 @@ const App: React.FC = () => {
     toggleContinuousMode,
     clearMessages
   } = useCosplayClient({
-    serverUrl: 'ws://localhost:8001/xiaozhi/v1/', // 连接到服务器的WebSocket端点
+    serverUrl: 'ws://localhost:8000/xiaozhi/v1/', // 连接到服务器的WebSocket端点
     autoConnect: true // 自动连接
   });
 

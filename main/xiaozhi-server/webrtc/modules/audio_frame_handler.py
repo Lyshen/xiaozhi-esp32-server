@@ -32,9 +32,30 @@ class AudioFrameHandler:
     
     async def convert_audio_to_pcm(self, frame):
         """将音频帧转换为PCM格式"""
-        # 复制自 _convert_audio_to_pcm 方法
-        pcm_data = frame.to_ndarray().flatten().tobytes()
-        return pcm_data
+        try:
+            # 记录音频帧的详细信息
+            logger.info(f"[AUDIO-DEBUG] 音频帧信息 - 格式: {frame.format.name}, 采样率: {frame.sample_rate}, 通道: {frame.layout.name}, 样本数: {len(frame.to_ndarray())}")
+            
+            # 检查是否是opus格式
+            if hasattr(frame.format, 'name') and frame.format.name.lower() == 'opus':
+                logger.info(f"[AUDIO-DEBUG] 检测到Opus格式，需要特殊处理")
+                # 这里可以添加特殊处理逻辑
+            
+            # 检查音频数据是否为空
+            audio_array = frame.to_ndarray()
+            if audio_array.size == 0:
+                logger.warning(f"[AUDIO-DEBUG] 音频数据为空，无法转换")
+                return b''
+                
+            pcm_data = audio_array.flatten().tobytes()
+            logger.info(f"[AUDIO-DEBUG] PCM转换完成，输出长度: {len(pcm_data)} 字节，前10字节: {pcm_data[:10]}")
+            return pcm_data
+        except Exception as e:
+            logger.error(f"[AUDIO-DEBUG] 音频转换错误: {str(e)}")
+            logger.error(f"[AUDIO-DEBUG] 错误详情: {e.__class__.__name__}: {str(e)}")
+            logger.error(f"[AUDIO-DEBUG] 堆栈跟踪: {traceback.format_exc()}")
+            # 返回空数据
+            return b''
         
     async def process_audio_frame(self, frame, client_id, webrtc_connections):
         """

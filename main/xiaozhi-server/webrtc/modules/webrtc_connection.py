@@ -5,7 +5,7 @@
 WebRTC连接模块
 定义WebRTC连接类及其相关功能
 """
-
+import asyncio
 import copy
 import logging
 import time
@@ -81,9 +81,9 @@ class WebRTCConnection:
         # 辅助方法
         self.recode_first_last_text = self.record_text_index
         
-        # 创建模拟的VAD和ASR对象
-        self.vad = self.VADHelper(logger)
-        self.asr = self.ASRHelper()
+        # 创建VAD和ASR对象
+        self.vad = VADHelper()
+        self.asr = ASRHelper()
     
     # 内部辅助类 - ASR处理器
 
