@@ -75,6 +75,7 @@ class WebRTCConnection:
         self.client_listen_mode = "auto"
         self.client_have_voice = False
         self.client_voice_stop = False
+        self.client_voice_stop_requested = False  # 新增：标记用户通过WebSocket请求停止（Push-to-Talk按钮释放）
         self.client_abort = False
         self.client_no_voice_last_time = 0.0
         
@@ -264,32 +265,15 @@ class WebRTCConnection:
             logging.error(f"TTS处理异常: {e}")
             return None, text, text_index
         
-        self.vad = VADHelper(logger)
-        
-        # 创建一个模拟的ASR对象
-        class ASRHelper:
-            async def speech_to_text(self, audio_data, session_id):
-                logger.warning(f"[SERVER-AUDIO] ASR处理音频，收到 {len(audio_data)} 段音频数据")
-                # 实际处理音频的地方
-                if len(audio_data) > 0:
-                    total_bytes = sum(len(a) for a in audio_data if a is not None)
-                    logger.warning(f"[SERVER-AUDIO] ASR处理音频总长度: {total_bytes} 字节")
-                    return "WebRTC音频转写测试成功", None
-                else:
-                    logger.warning(f"[SERVER-AUDIO] ASR收到空音频数据")
-                    return "", None
-        
-        self.asr = ASRHelper()
-        logger.warning(f"[SERVER-AUDIO] WebRTCConnection对象创建完成，客户端ID: {client_id}")
-    
     def should_replace_opus(self):
         return True
     
     def reset_vad_states(self):
-        logger.warning(f"[SERVER-AUDIO] 重置VAD状态")
+        """重置VAD状态"""
         self.client_have_voice = False
         self.client_voice_stop = False
-        logger.warning(f"[SERVER-AUDIO] VAD状态已重置: have_voice={self.client_have_voice}, voice_stop={self.client_voice_stop}")
+        self.client_voice_stop_requested = False  # 重置Push-to-Talk请求标志
+        logger.warning(f"[SERVER-AUDIO] VAD状态已重置: have_voice={self.client_have_voice}, voice_stop={self.client_voice_stop}, stop_requested={self.client_voice_stop_requested}")
     
     async def chat(self, text):
         """实现常规聊天功能"""
@@ -808,7 +792,14 @@ class ConnectionManager:
             
             # 8. 将音频数据传递到VAD处理链路
             result = None
-            if conn.client_voice_stop and len(conn.asr_audio) >= 15:
+            # 记录当前的VAD状态
+            logger.warning(f"[SERVER-AUDIO] 验证VAD状态: have_voice={conn.client_have_voice}, voice_stop={conn.client_voice_stop}, stop_requested={conn.client_voice_stop_requested}, 音频段数={len(conn.asr_audio)}")
+            
+            # 当以下三种情况之一时触发ASR处理:
+            # 1. 当采集了足够多的音频段(至少15段)且client_voice_stop=True
+            # 2. 当用户通过Push-to-Talk按钮请求停止(client_voice_stop_requested=True)且有音频数据(> 0)
+            if ((conn.client_voice_stop and len(conn.asr_audio) >= 15) or 
+                (conn.client_voice_stop_requested and len(conn.asr_audio) > 0)):
                 logger.warning(f"[SERVER-AUDIO] 开始处理整合的音频段，总共 {len(conn.asr_audio)} 段，准备调用ASR处理")
                 # 直接在这里调用ASR处理，不使用VAD处理逻辑
                 from core.handle.sendAudioHandle import send_stt_message

@@ -34,6 +34,10 @@ async def handleTextMessage(conn, message):
             elif msg_json["state"] == "stop":
                 conn.client_have_voice = True
                 conn.client_voice_stop = True
+                # 设置标志表明这是用户通过Push-to-Talk按钮请求的停止
+                if hasattr(conn, 'client_voice_stop_requested'):
+                    conn.client_voice_stop_requested = True
+                    logger.bind(tag=TAG).info(f"客户端请求停止拾音（Push-to-Talk按钮释放）")
                 if len(conn.asr_audio) > 0:
                     await handleAudioMessage(conn, b"")
             elif msg_json["state"] == "detect":
