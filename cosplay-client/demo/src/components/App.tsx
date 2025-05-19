@@ -21,7 +21,7 @@ const App: React.FC = () => {
     toggleContinuousMode,
     clearMessages
   } = useCosplayClient({
-    serverUrl: 'ws://localhost:8000/ws', // 连接到服务器的WebSocket端点
+    serverUrl: 'ws://localhost:8001/xiaozhi/v1/', // 连接到服务器的WebSocket端点
     autoConnect: true // 自动连接
   });
 
@@ -61,7 +61,7 @@ const App: React.FC = () => {
       </footer>
 
       <div className="app-info">
-        <p>已连接到: {isConnected ? 'ws://localhost:8000/ws' : '未连接'}</p>
+        <p>已连接到: {isConnected ? 'ws://localhost:8001/xiaozhi/v1/' : '未连接'}</p>
         <p>
           <small>
             {isConnected ? '请尝试录音或发送文本消息与服务器交互' : '请先连接到服务器'}

@@ -52,6 +52,10 @@ class SignalingHandler:
         self.websockets[client_id] = ws
         self.sessions[session_id] = client_id
         
+        # 记录连接信息，可以用于调试
+        logger.debug(f"WebRTC新客户端连接 [ID: {client_id}]")
+        # 注意：我们不再注册连接对象，直接简化处理
+        
         logger.info(f"WebRTC信令: 新的客户端连接 [ID: {client_id}, 会话: {session_id}]")
         
         # 发送连接确认消息

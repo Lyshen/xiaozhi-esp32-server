@@ -16,7 +16,7 @@ interface Message {
 }
 
 export function useCosplayClient({
-  serverUrl = 'ws://localhost:8000/ws',
+  serverUrl = 'ws://172.22.0.2:8000/xiaozhi/v1/',
   deviceId = 'demo-device',
   clientId = 'cosplay-client-demo',
   autoConnect = true,
@@ -51,7 +51,7 @@ export function useCosplayClient({
           frameDuration: 20, // 使用更短的帧长度以减少延迟
           // WebRTC相关配置 - 明确指定为true
           useWebRTC: true, // 启用WebRTC
-          webrtcSignalingUrl: 'ws://192.168.1.80:8082/ws/signaling', // 本地测试信令服务器地址
+          webrtcSignalingUrl: 'ws://localhost:8082/ws/signaling', // 修正的信令服务器地址
           echoCancellation: true, // 启用回声消除
           noiseSuppression: true, // 启用噪声抑制
           autoGainControl: true, // 启用自动增益控制

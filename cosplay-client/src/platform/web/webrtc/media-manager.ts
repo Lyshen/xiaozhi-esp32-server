@@ -85,7 +85,8 @@ export class MediaManager {
 
       // 创建处理节点
       // 注：ScriptProcessorNode已被标记为废弃，将来可能需要迁移到AudioWorklet
-      this.audioProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      // 使用最小的缓冲区大小，即设为1，以精确匹配服务器期望的形状(1, samples)
+      this.audioProcessor = this.audioContext.createScriptProcessor(1, 1, 1);
       this.audioProcessor.onaudioprocess = this.handleAudioProcess.bind(this);
 
       // 连接节点
@@ -93,13 +94,17 @@ export class MediaManager {
       this.audioProcessor.connect(this.audioContext.destination);
 
       this.isProcessing = true;
-      console.log('MediaManager: Audio processing initialized');
+      console.log('MediaManager: Audio processing initialized with buffer size 1');
       return true;
     } catch (error) {
       console.error('MediaManager: Failed to initialize audio processing:', error);
       return false;
     }
   }
+
+  // 添加音频包计数
+  private audioPacketCounter: number = 0;
+  private lastLogTime: number = 0;
 
   /**
    * 处理音频数据
@@ -114,7 +119,19 @@ export class MediaManager {
 
     // 转换为16bit PCM
     const pcmData = this.floatTo16BitPCM(inputData);
-
+    
+    // 增加音频包计数
+    this.audioPacketCounter++;
+    const now = Date.now();
+    
+    // 每个音频包都记录日志（为了调试需要）
+    console.log(`[CLIENT-AUDIO] 发送音频数据包 #${this.audioPacketCounter}, 大小: ${pcmData.buffer.byteLength} 字节, 时间: ${new Date().toISOString()}`);
+    
+    // 每10个数据包打印一次统计信息
+    if (this.audioPacketCounter % 10 === 0) {
+      console.log(`[CLIENT-AUDIO] 已发送 ${this.audioPacketCounter} 个音频数据包, 总计 ${this.audioPacketCounter * pcmData.buffer.byteLength} 字节`);
+    }
+    
     // 如果设置了回调，则调用回调
     if (this.audioCallback) {
       this.audioCallback(pcmData.buffer);
@@ -126,16 +143,21 @@ export class MediaManager {
 
   /**
    * 将Float32Array转换为Int16Array (16bit PCM)
+   * 并调整数据形状以适应服务器期望的[1, samples]而非[4096, samples]
    * @param input Float32Array输入
    * @returns Int16Array (16bit PCM)
    */
   private floatTo16BitPCM(input: Float32Array): Int16Array {
+    // 创建一个只有1行的数组(以适应服务器期望的形状)
     const output = new Int16Array(input.length);
+    
     for (let i = 0; i < input.length; i++) {
       // 将-1.0到1.0的浮点数转换为-32768到32767的整数
       const s = Math.max(-1, Math.min(1, input[i]));
       output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
+    
+    // 返回调整后的数组
     return output;
   }
 

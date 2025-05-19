@@ -188,12 +188,47 @@ class AudioProcessor:
             # 这里假设音频数据是 PCM 16-bit
             samples = np.frombuffer(audio_data, dtype=np.int16)
             
-            # 创建 PyAV 音频帧
-            frame = av.AudioFrame.from_ndarray(
-                samples.reshape(-1, self.channels),
-                format="s16",
-                layout="mono" if self.channels == 1 else "stereo"
-            )
+            # 记录一下实际形状，用于调试
+            logger.debug(f"接收到音频数据形状: {samples.shape}")
+            
+            try:
+                # 创建 PyAV 音频帧
+                # 尝试适应不同的输入形状
+                if samples.size % self.channels == 0:
+                    samples_reshaped = samples.reshape(-1, self.channels)
+                    frame = av.AudioFrame.from_ndarray(
+                        samples_reshaped,
+                        format="s16",
+                        layout="mono" if self.channels == 1 else "stereo"
+                    )
+                else:
+                    # 如果无法整除通道数，可能需要截断或填充
+                    logger.warning(f"音频数据大小 {samples.size} 不能被通道数 {self.channels} 整除")
+                    # 截断到最近的可整除大小
+                    trunc_size = (samples.size // self.channels) * self.channels
+                    samples = samples[:trunc_size]
+                    frame = av.AudioFrame.from_ndarray(
+                        samples.reshape(-1, self.channels),
+                        format="s16",
+                        layout="mono" if self.channels == 1 else "stereo"
+                    )
+            except ValueError as e:
+                # 如果仍然失败，尝试将4096作为通道数（客户端可能发送的形状）
+                logger.warning(f"尝试特殊处理音频数据: {e}")
+                # 检查是否可能是[4096, samples]形状的数据
+                if samples.size % 4096 == 0:
+                    # 将其转置为[samples, 4096]然后重新整形为[samples*4096//channels, channels]
+                    reshaped = samples.reshape(-1, 4096).transpose().flatten()
+                    if reshaped.size % self.channels == 0:
+                        frame = av.AudioFrame.from_ndarray(
+                            reshaped.reshape(-1, self.channels),
+                            format="s16", 
+                            layout="mono" if self.channels == 1 else "stereo"
+                        )
+                    else:
+                        raise ValueError(f"无法将形状为{samples.shape}的数据重整为通道数{self.channels}")
+                else:
+                    raise
             frame.sample_rate = self.sample_rate
             
             # 将帧放入队列

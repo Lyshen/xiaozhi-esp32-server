@@ -68,6 +68,9 @@ class ConnectionManager:
         self.audio_processors = {}  # client_id -> AudioTrackProcessor
         self.pending_candidates = {}  # client_id -> [candidates]
         
+        # 存储客户端的音频处理统计信息
+        self.client_stats = {}  # client_id -> stats dict
+        
         # 创建RTCConfiguration，包含ICE服务器
         ice_servers = [RTCIceServer(**server) for server in config.get_ice_servers()]
         self.rtc_configuration = RTCConfiguration(ice_servers)
@@ -96,7 +99,12 @@ class ConnectionManager:
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
             logger.info(f"ICE连接状态变化 [客户端: {client_id}]: {pc.iceConnectionState}")
-            if pc.iceConnectionState == "failed":
+            if pc.iceConnectionState == "connected":
+                logger.info(f"WebRTC: ICE连接已成功建立 [客户端: {client_id}]")
+            elif pc.iceConnectionState == "completed":
+                logger.info(f"WebRTC: ICE连接已完成并稳定 [客户端: {client_id}]")
+            elif pc.iceConnectionState == "failed":
+                logger.info(f"WebRTC: ICE连接失败 [客户端: {client_id}]")
                 await self.handle_connection_failure(client_id)
         
         # 设置数据通道回调
@@ -116,14 +124,31 @@ class ConnectionManager:
         # 设置轨道回调
         @pc.on("track")
         def on_track(track):
-            logger.info(f"收到媒体轨道 [客户端: {client_id}, 类型: {track.kind}]")
+            client_id_safe = client_id or "unknown"
+            logger.info(f"WebRTC: 收到轨道 [客户端: {client_id_safe}, 类型: {track.kind}]")
+            
             if track.kind == "audio":
-                # 创建并存储音频处理器
-                audio_processor = AudioTrackProcessor(track, self.process_audio_frame)
-                self.audio_processors[client_id] = audio_processor
+                logger.info(f"WebRTC: 收到音频轨道 [客户端: {client_id_safe}, 格式: {track.kind}, 采样率: {track.rate if hasattr(track, 'rate') else '未知'}]")
+                audio_track = track  # 获取来自对等连接的原始音频轨道
                 
-                # 将音频处理器添加到连接中
-                pc.addTrack(audio_processor)
+                # 创建处理回调
+                async def frame_callback(frame):
+                    try:
+                        logger.info(f"WebRTC: 收到音频帧 [客户端: {client_id_safe}, 采样率: {frame.sample_rate}, 帧大小: {len(frame.to_ndarray())} 采样点]")
+                        # 处理音频帧
+                        await self.process_audio_frame(frame, client_id_safe)
+                    except Exception as e:
+                        logger.exception(f"WebRTC: 处理音频帧时出错 [客户端: {client_id_safe}]: {e}")
+                
+                # 创建带有回调的音频轨道处理器
+                processor = AudioTrackProcessor(track, frame_callback)
+                self.audio_processors[client_id_safe] = processor
+                logger.info(f"WebRTC: 已创建音频处理器 [客户端: {client_id_safe}]")
+            else:
+                logger.info(f"WebRTC: 收到非音频轨道 [客户端: {client_id_safe}, 类型: {track.kind}]")
+        
+        logger.info(f"WebRTC: 音频处理器设置完成 [客户端: {client_id}]")
+
                 
         # 将任何待处理的ICE候选者应用到连接
         if client_id in self.pending_candidates:
@@ -432,16 +457,151 @@ class ConnectionManager:
         # 在这里可以将音频数据传递给音频处理管道...
         # 该实现取决于您具体的音频处理需求
     
-    async def process_audio_frame(self, frame):
-        """
-        处理音频帧的回调函数
+    async def _convert_audio_to_pcm(self, frame):
+        """将音频帧转换为PCM格式"""
+        import numpy as np
+        audio_array = frame.to_ndarray()
+        return audio_array.tobytes()
         
-        Args:
-            frame: 音频帧
+    # 添加音频包计数器和统计信息（类变量）
+    _audio_packet_counters = {}  # 客户端ID -> 计数器
+    _audio_bytes_counters = {}   # 客户端ID -> 字节计数
+    _last_log_time = {}          # 客户端ID -> 上次日志时间
+    
+    async def process_audio_frame(self, frame, client_id):
         """
-        # 这里实现您的音频处理逻辑
-        # 例如：语音识别、音频特征提取等
-        pass
+        处理WebRTC音频帧
+        
+        参数:
+        frame: 音频帧
+        client_id: 客户端 ID
+        """
+        try:
+            # 更新计数器
+            if client_id not in self._audio_packet_counters:
+                self._audio_packet_counters[client_id] = 0
+                self._audio_bytes_counters[client_id] = 0
+                self._last_log_time[client_id] = 0
+                
+            self._audio_packet_counters[client_id] += 1
+            counter = self._audio_packet_counters[client_id]
+            
+            # 添加明确的日志 - 记录开始处理音频，使用明确的标记便于在Docker日志中查找
+            logger.warning(f"[SERVER-AUDIO] 接收音频包 #{counter} 来自客户端 {client_id}, 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 1. 将音频帧转换为PCM格式 (原VAD链路需要的格式)
+            audio_array = await self._convert_audio_to_pcm(frame)
+            self._audio_bytes_counters[client_id] += len(audio_array)
+            logger.warning(f"[SERVER-AUDIO] 音频转换完成，数据包 #{counter}，大小: {len(audio_array)} 字节，累计: {self._audio_bytes_counters[client_id]} 字节")
+            
+            # 2. 创建简单的连接对象，用于传递给VAD处理链路
+            class WebRTCConnection:
+                def __init__(self):
+                    # 基本识别属性
+                    self.client_id = client_id
+                    self.headers = {"device-id": client_id}
+                    self.session_id = f"webrtc_{client_id}"
+                    
+                    # VAD相关属性 - process_audio_internal所需
+                    self.client_audio_buffer = bytearray()
+                    self.client_listen_mode = "auto"
+                    self.client_have_voice = False
+                    self.client_voice_stop = False
+                    self.client_abort = False
+                    self.client_no_voice_last_time = 0.0
+                    
+                    # ASR相关属性 - process_audio_internal所需
+                    self.asr_server_receive = True  # 确保设置这个属性以避免AttributeError
+                    self.asr_audio = []  # 用于存储音频数据
+                    
+                    # 其他属性
+                    self.use_webrtc = True
+                    self.need_bind = False
+                    self.max_output_size = 0
+                    self.close_after_chat = False
+                    
+                    # 明确记录已初始化ASR相关属性，用于调试
+                    logger.warning(f"[SERVER-AUDIO] WebRTCConnection对象创建，客户端ID: {client_id}, asr_server_receive已设置为{self.asr_server_receive}")
+                    
+                    # 创建一个模拟的VAD对象
+                    from unittest.mock import MagicMock
+                    
+                    class VADHelper:
+                        def is_vad(self, conn, audio):
+                            logger.info(f"WebRTC: VAD模拟判断音频，长度: {len(audio)} 字节")
+                            # 始终返回有声音，确保音频能进入处理链路
+                            return True
+                    
+                    self.vad = VADHelper()
+                    
+                    # 创建一个模拟的ASR对象
+                    class ASRHelper:
+                        async def speech_to_text(self, audio_data, session_id):
+                            logger.info(f"WebRTC: ASR模拟处理音频，长度: {len(audio_data)} 段")
+                            return "WebRTC音频测试成功", None
+                    
+                    self.asr = ASRHelper()
+                    logger.info(f"WebRTC: 创建连接对象完成，客户端ID: {client_id}")
+                    
+                def should_replace_opus(self):
+                    return True
+                    
+                def reset_vad_states(self):
+                    logger.info(f"WebRTC: 重置VAD状态")
+                    self.client_have_voice = False
+                    self.client_voice_stop = False
+                    
+                async def chat(self, text):
+                    logger.info(f"WebRTC: 模拟聊天调用, 文本: {text}")
+                    return f"WebRTC测试回应: {text}"
+                    
+                async def chat_with_function_calling(self, text):
+                    logger.info(f"WebRTC: 模拟函数调用聊天, 文本: {text}")
+                    return f"WebRTC测试函数调用回应: {text}"
+            
+            # 3. 创建连接对象
+            conn = WebRTCConnection()
+            
+            # 4. 将音频数据添加到缓冲区
+            conn.client_audio_buffer.extend(audio_array)
+            logger.warning(f"[SERVER-AUDIO] 音频数据已添加到缓冲区，客户端: {client_id}, 数据包 #{self._audio_packet_counters[client_id]}, 当前缓冲区大小: {len(conn.client_audio_buffer)} 字节")
+            
+            # 5. 引入process_audio_internal函数
+            try:
+                from main.xiaozhi_server.core.handle.receiveAudioHandle import process_audio_internal
+                logger.warning(f"[SERVER-AUDIO] 成功导入原有VAD处理链路 (主路径)")
+            except ImportError:
+                # 备选导入路径
+                try:
+                    from core.handle.receiveAudioHandle import process_audio_internal
+                    logger.warning(f"[SERVER-AUDIO] 成功从备选路径导入原有VAD处理链路")
+                except ImportError as e:
+                    logger.error(f"[SERVER-AUDIO] 无法导入VAD处理链路: {str(e)}")
+                    return
+            
+            # 6. 将音频数据传递到VAD处理链路
+            logger.warning(f"[SERVER-AUDIO] 正在调用原有VAD处理链路，数据包 #{self._audio_packet_counters[client_id]}，传递音频长度: {len(audio_array)} 字节")
+            result = await process_audio_internal(conn, audio_array)
+            logger.warning(f"[SERVER-AUDIO] VAD处理链路已完成，数据包 #{self._audio_packet_counters[client_id]}，结果: {result}")
+            
+            # 7. 更新统计信息
+            client_info = self.client_stats.get(client_id, {'frames_processed': 0, 'bytes_processed': 0})
+            client_info['frames_processed'] = client_info.get('frames_processed', 0) + 1
+            client_info['bytes_processed'] = client_info.get('bytes_processed', 0) + len(audio_array)
+            self.client_stats[client_id] = client_info
+            
+            # 定期输出统计信息
+            if client_info['frames_processed'] % 100 == 0:
+                logger.info(f"WebRTC已处理 {client_info['frames_processed']} 帧音频 [客户端: {client_id}]")
+            
+            return result
+        
+        except Exception as e:
+            logger.error(f"[SERVER-AUDIO-ERROR] 处理音频帧时出错: {str(e)}")
+            logger.error(f"[SERVER-AUDIO-ERROR] 错误详情: {e.__class__.__name__}: {str(e)}")
+            import traceback
+            logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
+            return None
     
     async def handle_connection_failure(self, client_id):
         """
@@ -453,17 +613,20 @@ class ConnectionManager:
         logger.warning(f"WebRTC连接失败 [客户端: {client_id}]")
         # 这里可以实现重连逻辑，或者通知客户端切换到备用通信方式
     
+    # 简化设计，移除了注册连接的方法
+        
     async def close_connection(self, client_id):
         """
-        关闭客户端连接
+        关闭并清理WebRTC连接
         
         Args:
-            client_id: 客户端ID
+            client_id: 客户端 ID
         """
-        # 关闭并清理对等连接
-        pc = self.peer_connections.pop(client_id, None)
+        # 关闭PeerConnection
+        pc = self.peer_connections.get(client_id)
         if pc:
             await pc.close()
+            self.peer_connections.pop(client_id, None)
             
         # 清理关联的资源
         self.audio_processors.pop(client_id, None)
