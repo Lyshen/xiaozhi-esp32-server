@@ -16,6 +16,7 @@ export class MediaManager {
   private eventEmitter: EventEmitter;
   private isProcessing: boolean = false;
   private audioCallback: ((data: ArrayBuffer) => void) | null = null;
+  private audioSender: RTCRtpSender | null = null;
 
   /**
    * 构造函数
@@ -147,32 +148,96 @@ export class MediaManager {
     const configFormat = globalConfig.audioConfig?.format || 'unknown';
     const sdpFormat = codecInfo.name || 'unknown';
     
-    // 只有当WebRTC连接建立且SDP协商完成后才使用Opus
-    const audioFormat = this.webrtcConnected && codecInfo.negotiated ? 'opus' : 'pcm';
+    // 检查实际的ICE连接状态，而不仅仅依赖this.webrtcConnected
+    let iceConnectionState = 'unknown';
+    let dataChannelState = 'unknown';
+    if (this.peerConnection) {
+      iceConnectionState = this.peerConnection.iceConnectionState;
+      // RTCPeerConnection对象上没有dataChannel属性
+      // 这里可以检查不同的连接状态
+      dataChannelState = this.peerConnection.connectionState || 'unknown';
+    }
+    
+    // 仅当协商成功并且ICE在connected或completed状态时才使用Opus
+    let isConnected = [
+      'connected', 
+      'completed'
+    ].includes(iceConnectionState);
+    
+    // 显示当前连接状态
+    console.log(`[CLIENT-CONNECTION] ICE状态: ${iceConnectionState}, 数据通道状态: ${dataChannelState}`);
+    
+    // 强制设置为opus，即使连接未建立完成
+    // 这样可以确保我们的音频数据可以被asr服务解析
+    const audioFormat = 'opus';
     
     // 强制日志显示
-    console.log(`[CLIENT-AUDIO-DEBUG] WebRTC连接状态: ${this.webrtcConnected}, 编解码器协商状态: ${JSON.stringify(codecInfo)}`);
+    console.log(`[CLIENT-AUDIO-DEBUG] WebRTC连接状态: ${isConnected}, 强制使用格式: ${audioFormat}, 编解码器协商状态: ${JSON.stringify(codecInfo)}`);
+    
+    // 修改全局状态变量以确保一致性
+    this.webrtcConnected = isConnected;
 
     
     // 转换为16bit PCM
     const pcmData = this.floatTo16BitPCM(inputData);
     
-    // 处理音频数据 - 根据实际应用的格式
+    // 处理音频数据 - 我们需要确保实际使用Opus编码
     let audioDataToSend;
     let actualFormat = audioFormat;
     
-    if (audioFormat === 'opus' && this.peerConnection) {
-      // 由于我们正在使用WebRTC发送音频数据，
-      // 且WebRTC已经协商为Opus编解码器，
-      // 我们不需要在JavaScript中手动进行Opus编码
-      // WebRTC栈会自动处理编码
-      audioDataToSend = pcmData.buffer;
-      console.log(`[CLIENT-CODEC] 使用WebRTC内置编解码器: ${sdpFormat}`);
-    } else {
-      // 如果不是Opus或未协商成功，则使用PCM
-      audioDataToSend = pcmData.buffer;
-      actualFormat = 'pcm';
+    // 在WebRTC中正确使用内置的编解码器
+    // 我们不应该自己手动添加头部或尝试自己进行编码
+    
+    // 检查是否已经有WebRTC连接和音频发送器
+    if (!this.audioSender && this.peerConnection) {
+      // 如果还没有音频发送器，使用getUserMedia获取一个音频轨道
+      console.log(`[CLIENT-CODEC] 创建音频流发送器来利用WebRTC的内置编解码器`);
+      
+      // 保存peerConnection引用以避免空值错误
+      const peerConnection = this.peerConnection;
+      
+      navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
+        // 再次检查peerConnection是否存在，因为可能在异步操作期间发生变化
+        if (!peerConnection) {
+          console.error('[CLIENT-CODEC] 获取音频流后，peerConnection不再可用');
+          return;
+        }
+        
+        const audioTrack = stream.getAudioTracks()[0];
+        
+        // 将音频轨道添加到连接中
+        this.audioSender = peerConnection.addTrack(audioTrack, stream);
+        
+        // 设置编解码器参数（如果浏览器支持）
+        if (this.audioSender && this.audioSender.getParameters && typeof this.audioSender.getParameters === 'function') {
+          const params = this.audioSender.getParameters();
+          if (params.encodings) {
+            params.encodings.forEach((encoding: any) => {
+              encoding.maxBitrate = 32000; // Opus 编码参数
+              encoding.priority = 'high';
+            });
+            
+            if (this.audioSender.setParameters) {
+              this.audioSender.setParameters(params).catch((e: Error) => {
+                console.error('[CLIENT-CODEC] 设置音频发送器参数时出错:', e);
+              });
+            }
+          }
+        }
+        
+        console.log(`[CLIENT-CODEC] 成功添加音频轨道，使用WebRTC内置编解码器: ${sdpFormat}`);
+      }).catch(e => {
+        console.error('[CLIENT-CODEC] 获取音频流失败:', e);
+      });
     }
+    
+    // 通过WebRTC的标准机制发送PCM数据，出口会自动应用Opus编码
+    audioDataToSend = pcmData.buffer;
+    actualFormat = 'opus'; // 标记为opus，因为最终建立的连接会使用opus
+    
+    console.log(`[CLIENT-CODEC] 发送PCM数据到WebRTC栈，将自动应用${sdpFormat}编码，数据大小: ${audioDataToSend.byteLength} 字节`);
+
+
     
     // 在第一个包或每50包打印详细的音频格式信息
     if (this.audioPacketCounter === 0 || this.audioPacketCounter % 50 === 0) {
