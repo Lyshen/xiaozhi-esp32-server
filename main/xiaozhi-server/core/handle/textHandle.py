@@ -32,14 +32,25 @@ async def handleTextMessage(conn, message):
                 conn.client_have_voice = True
                 conn.client_voice_stop = False
             elif msg_json["state"] == "stop":
+                # 设置VAD状态标志
                 conn.client_have_voice = True
                 conn.client_voice_stop = True
-                # 设置标志表明这是用户通过Push-to-Talk按钮请求的停止
-                if hasattr(conn, 'client_voice_stop_requested'):
-                    conn.client_voice_stop_requested = True
-                    logger.bind(tag=TAG).info(f"客户端请求停止拾音（Push-to-Talk按钮释放）")
+                
+                logger.bind(tag=TAG).warning(f"[按钮释放] 收到stop消息，设置 client_voice_stop = True")
+                
+                # 注册全局标志，便于其他模块读取
+                import builtins
+                setattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', True)
+                setattr(builtins, 'CLIENT_ID_FOR_STOP', conn.headers.get('device-id') if hasattr(conn, 'headers') else None)
+                
+                logger.bind(tag=TAG).warning(f"[按钮释放] 已设置全局标志 PUSH_TO_TALK_STOP_REQUESTED = True")
+                
+                # 触发音频处理
                 if len(conn.asr_audio) > 0:
+                    logger.bind(tag=TAG).warning(f"[按钮释放] 将调用handleAudioMessage处理音频数据，数据量: {len(conn.asr_audio)} 段")
                     await handleAudioMessage(conn, b"")
+                else:
+                    logger.bind(tag=TAG).warning(f"[按钮释放] WebSocket对象不含音频数据，请查看音频数据是否在WebRTC对象中")
             elif msg_json["state"] == "detect":
                 conn.asr_server_receive = False
                 conn.client_have_voice = False

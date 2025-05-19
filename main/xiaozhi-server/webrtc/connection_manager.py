@@ -792,14 +792,44 @@ class ConnectionManager:
             
             # 8. 将音频数据传递到VAD处理链路
             result = None
-            # 记录当前的VAD状态
-            logger.warning(f"[SERVER-AUDIO] 验证VAD状态: have_voice={conn.client_have_voice}, voice_stop={conn.client_voice_stop}, stop_requested={conn.client_voice_stop_requested}, 音频段数={len(conn.asr_audio)}")
+            # 检查是否有全局Push-to-Talk停止请求标志
+            try:
+                import builtins
+                global_stop_requested = getattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', False)
+                client_id_for_stop = getattr(builtins, 'CLIENT_ID_FOR_STOP', None)
+                
+                # 如果全局标志存在，并且客户端ID匹配，则为当前连接设置停止标志
+                if global_stop_requested and (client_id_for_stop is None or client_id_for_stop == conn.client_id):
+                    conn.client_voice_stop = True
+                    if hasattr(conn, 'client_voice_stop_requested'):
+                        conn.client_voice_stop_requested = True
+                    logger.warning(f"[ASR-TRIGGER-GLOBAL] 检测到全局Push-to-Talk停止请求，已设置 client_voice_stop=True, client_voice_stop_requested=True")
+                    # 重置全局标志，避免多次触发
+                    setattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', False)
+            except Exception as e:
+                logger.warning(f"[ASR-TRIGGER-ERROR] 检查全局标志时出错: {e}")
             
-            # 当以下三种情况之一时触发ASR处理:
+            # 记录当前的VAD状态
+            logger.warning(f"[SERVER-AUDIO] 验证VAD状态: have_voice={conn.client_have_voice}, voice_stop={conn.client_voice_stop}, stop_requested={conn.client_voice_stop_requested if hasattr(conn, 'client_voice_stop_requested') else 'undefined'}, 音频段数={len(conn.asr_audio)}")
+            
+            # 对ASR触发条件进行详细日志记录
+            logger.warning(f"[ASR-TRIGGER-1] 检查ASR触发条件: client_id={client_id}, voice_stop={conn.client_voice_stop}, stop_requested={conn.client_voice_stop_requested if hasattr(conn, 'client_voice_stop_requested') else 'undefined'}, 音频段数={len(conn.asr_audio)}")
+            
+            # 检查条件一: 当采集了足够多的音频段(至少15段)且client_voice_stop=True
+            condition1 = conn.client_voice_stop and len(conn.asr_audio) >= 15
+            logger.warning(f"[ASR-TRIGGER-2] 条件一检查结果: {condition1} (voice_stop={conn.client_voice_stop} AND 段数>={len(conn.asr_audio)}>15)")
+            
+            # 检查条件二: 当用户通过Push-to-Talk按钮请求停止且有音频数据
+            has_stop_requested_attr = hasattr(conn, 'client_voice_stop_requested')
+            condition2 = has_stop_requested_attr and conn.client_voice_stop_requested and len(conn.asr_audio) > 0
+            logger.warning(f"[ASR-TRIGGER-3] 条件二检查结果: {condition2} (has_attr={has_stop_requested_attr}, stop_requested={conn.client_voice_stop_requested if has_stop_requested_attr else 'undefined'} AND 段数={len(conn.asr_audio)}>0)")
+            
+            
+            
+            # 当以下两种情况之一时触发ASR处理:
             # 1. 当采集了足够多的音频段(至少15段)且client_voice_stop=True
             # 2. 当用户通过Push-to-Talk按钮请求停止(client_voice_stop_requested=True)且有音频数据(> 0)
-            if ((conn.client_voice_stop and len(conn.asr_audio) >= 15) or 
-                (conn.client_voice_stop_requested and len(conn.asr_audio) > 0)):
+            if condition1 or condition2:
                 logger.warning(f"[SERVER-AUDIO] 开始处理整合的音频段，总共 {len(conn.asr_audio)} 段，准备调用ASR处理")
                 # 直接在这里调用ASR处理，不使用VAD处理逻辑
                 from core.handle.sendAudioHandle import send_stt_message
