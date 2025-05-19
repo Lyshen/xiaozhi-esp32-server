@@ -6,15 +6,16 @@ ASR辅助模块
 负责语音识别(ASR)功能的处理
 """
 
-import logging
 import traceback
+from config.logger import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class ASRHelper:
     def __init__(self):
         # 使用全局日志对象
         self.logger = logger
+        self.TAG = __name__
     
     async def speech_to_text(self, audio_data, session_id):
         """异步处理语音转文本
@@ -62,7 +63,8 @@ class ASRHelper:
             
             # 尝试初始化ASR模块
             logger.info(f"[ASR-DEBUG] 尝试初始化ASR模块")
-            modules = initialize_modules(self.logger, config, init_asr=True)
+            # 使用loguru的logger实例，不通过self.logger传递
+            modules = initialize_modules(logger, config, init_asr=True)
             asr_provider = modules.get("asr")
             
             if asr_provider is None:

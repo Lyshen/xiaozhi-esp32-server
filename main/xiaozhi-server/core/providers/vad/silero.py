@@ -24,9 +24,28 @@ class VADProvider(VADProviderBase):
         self.vad_threshold = float(config.get("threshold", 0.5))
         self.silence_threshold_ms = int(config.get("min_silence_duration_ms", 1000))
 
-    def is_vad(self, conn, opus_packet):
+    def is_vad(self, conn, audio_data):
         try:
-            pcm_frame = self.decoder.decode(opus_packet, 960)
+            # 检查是否为PCM格式还是Opus格式
+            # PCM数据通常以int16格式存储，尝试直接解析
+            try:
+                # 尝试将数据解析为PCM格式
+                _ = np.frombuffer(audio_data, dtype=np.int16)
+                # 如果可以解析为int16数组，则认为是PCM数据
+                pcm_frame = audio_data
+                logger.info(f"[VAD-DEBUG] 检测到PCM数据，长度: {len(pcm_frame)}字节")
+            except Exception:
+                # 如果不能解析为PCM，尝试作为Opus解码
+                try:
+                    logger.info(f"[VAD-DEBUG] 尝试作为Opus数据解码，长度: {len(audio_data)}字节")
+                    pcm_frame = self.decoder.decode(audio_data, 960)
+                    logger.info(f"[VAD-DEBUG] Opus解码成功，解码后长度: {len(pcm_frame)}字节")
+                except Exception as e:
+                    # 解码失败，记录错误并返回False
+                    logger.info(f"解码错误: {e}")
+                    return False
+                
+            # 将PCM数据添加到缓冲区
             conn.client_audio_buffer.extend(pcm_frame)  # 将新数据加入缓冲区
 
             # 处理缓冲区中的完整帧（每次处理512采样点）
@@ -62,3 +81,4 @@ class VADProvider(VADProviderBase):
             logger.bind(tag=TAG).info(f"解码错误: {e}")
         except Exception as e:
             logger.bind(tag=TAG).error(f"Error processing audio packet: {e}")
+
