@@ -184,51 +184,47 @@ class AudioProcessor:
             await self.start()
         
         try:
-            # 将音频数据转换为帧
-            # 这里假设音频数据是 PCM 16-bit
+            # WebRTC解码后的音频数据处理
+            # WebRTC默认使用Opus编码，解码后是PCM 16-bit
             samples = np.frombuffer(audio_data, dtype=np.int16)
             
-            # 记录一下实际形状，用于调试
-            logger.debug(f"接收到音频数据形状: {samples.shape}")
+            # 记录音频数据信息
+            logger.debug(f"接收到音频数据: size={len(audio_data)} bytes, samples={samples.size}")
             
             try:
-                # 创建 PyAV 音频帧
-                # 尝试适应不同的输入形状
-                if samples.size % self.channels == 0:
-                    samples_reshaped = samples.reshape(-1, self.channels)
+                # WebRTC的音频帧通常是16kHz采样率，单通道
+                # 根据采样率和通道数计算帧长
+                frame_size = int(self.sample_rate * 0.02)  # 20ms帧长
+                
+                # 确保数据长度是帧大小的倍数
+                if samples.size % frame_size != 0:
+                    logger.warning(f"音频数据大小 {samples.size} 不是帧大小 {frame_size} 的倍数")
+                    # 截断到最近的帧边界
+                    samples = samples[:samples.size // frame_size * frame_size]
+                
+                # 将数据分割成多个帧
+                frames = np.split(samples, samples.size // frame_size)
+                
+                # 处理每一帧
+                for frame_samples in frames:
+                    # 创建PyAV音频帧
                     frame = av.AudioFrame.from_ndarray(
-                        samples_reshaped,
+                        frame_samples.reshape(-1, self.channels),
                         format="s16",
                         layout="mono" if self.channels == 1 else "stereo"
                     )
-                else:
-                    # 如果无法整除通道数，可能需要截断或填充
-                    logger.warning(f"音频数据大小 {samples.size} 不能被通道数 {self.channels} 整除")
-                    # 截断到最近的可整除大小
-                    trunc_size = (samples.size // self.channels) * self.channels
-                    samples = samples[:trunc_size]
-                    frame = av.AudioFrame.from_ndarray(
-                        samples.reshape(-1, self.channels),
-                        format="s16",
-                        layout="mono" if self.channels == 1 else "stereo"
-                    )
-            except ValueError as e:
-                # 如果仍然失败，尝试将4096作为通道数（客户端可能发送的形状）
-                logger.warning(f"尝试特殊处理音频数据: {e}")
-                # 检查是否可能是[4096, samples]形状的数据
-                if samples.size % 4096 == 0:
-                    # 将其转置为[samples, 4096]然后重新整形为[samples*4096//channels, channels]
-                    reshaped = samples.reshape(-1, 4096).transpose().flatten()
-                    if reshaped.size % self.channels == 0:
-                        frame = av.AudioFrame.from_ndarray(
-                            reshaped.reshape(-1, self.channels),
-                            format="s16", 
-                            layout="mono" if self.channels == 1 else "stereo"
-                        )
-                    else:
-                        raise ValueError(f"无法将形状为{samples.shape}的数据重整为通道数{self.channels}")
-                else:
-                    raise
+                    frame.sample_rate = self.sample_rate
+                    
+                    # 将帧放入队列
+                    self.frame_queue.put(frame)
+                    
+                    # 记录统计信息
+                    self.audio_packets += 1
+                    self.audio_bytes += len(audio_data)
+                    
+            except Exception as e:
+                logger.error(f"处理音频数据时出错: {str(e)}")
+                raise
             frame.sample_rate = self.sample_rate
             
             # 将帧放入队列
