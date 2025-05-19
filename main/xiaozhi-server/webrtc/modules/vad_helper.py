@@ -158,8 +158,8 @@ class VADHelper:
                 logger.warning(f"[VAD-DEBUG] 音频数据太短: {len(audio_data)}字节")
                 return False, 0.0
                 
-            # VAD处理，传递格式信息给VAD provider
-            is_speech, prob = self.vad.is_speech(audio_data, is_pcm=(not is_opus))
+            # VAD处理 - 使用原始接口，不添加额外参数
+            is_speech, prob = self.vad.is_speech(audio_data)
             logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
             return is_speech, prob
         except Exception as e:

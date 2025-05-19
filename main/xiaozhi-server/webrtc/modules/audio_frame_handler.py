@@ -108,19 +108,10 @@ class AudioFrameHandler:
                 webrtc_connections[client_id] = conn
                 logger.warning(f"[SERVER-AUDIO] 创建新的WebRTC连接对象，客户端ID: {client_id}")
             
-            # 3. 将原始音频数据（可能是Opus格式）添加到ASR缓冲区
-            # 获取原始帧的数据，最可能是Opus格式
-            raw_frame = self.original_frames[client_id][-1]
-            # 尝试获取原始编码数据
-            if hasattr(raw_frame, 'planes') and raw_frame.planes:
-                # 可能是Opus编码数据
-                opus_data = bytes(raw_frame.planes[0])
-                conn.asr_audio.append(opus_data)
-                logger.warning(f"[SERVER-AUDIO] 原始音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
-            else:
-                # 如果无法获取原始编码数据，使用PCM数据作为备选
-                conn.asr_audio.append(audio_array)
-                logger.warning(f"[SERVER-AUDIO] PCM音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+            # 3. 将音频数据添加到ASR缓冲区
+            # 在convert_audio_to_pcm已经尽可能保留了Opus格式
+            conn.asr_audio.append(audio_array)
+            logger.warning(f"[SERVER-AUDIO] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
             
             # 4. 音频包计数器
             packet_counter = self.audio_packet_counters[client_id]
