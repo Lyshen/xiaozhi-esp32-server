@@ -176,6 +176,9 @@ class WebRTCConnection:
     
     # 内部辅助类 - ASR处理器
     class ASRHelper:
+        def __init__(self):
+            self.logger = logging.getLogger(__name__)
+        
         async def speech_to_text(self, audio_data, session_id):
             """异步处理语音转文本
             
@@ -193,10 +196,9 @@ class WebRTCConnection:
                 
                 # 使用正确的方式获取ASR服务
                 from core.utils.util import initialize_modules
-                logger = self.logger
                 
                 # 尝试初始化ASR模块
-                modules = initialize_modules(logger, config, init_asr=True)
+                modules = initialize_modules(self.logger, config, init_asr=True)
                 asr_provider = modules.get("asr")
                 
                 if asr_provider is None:
@@ -206,7 +208,7 @@ class WebRTCConnection:
                     asr_config = config["ASR"][select_asr_module]
                     asr_provider = ASRProvider(asr_config, False)
                 
-                logger.warning(f"[SERVER-ASR] 获取到ASR服务: {type(asr_provider).__name__}")
+                self.logger.warning(f"[SERVER-ASR] 获取到ASR服务: {type(asr_provider).__name__}")
                 
                 # 调用ASR服务进行语音识别
                 # 注意：asr_provider.speech_to_text是异步方法，返回(text, extra_info)
@@ -214,16 +216,16 @@ class WebRTCConnection:
                 
                 # 在日志中记录识别结果
                 if text and len(text.strip()) > 0:
-                    logger.warning(f"[SERVER-ASR] 识别成功: '{text}'")
+                    self.logger.warning(f"[SERVER-ASR] 识别成功: '{text}'")
                 else:
-                    logger.warning(f"[SERVER-ASR] 识别为空或失败")
+                    self.logger.warning(f"[SERVER-ASR] 识别为空或失败")
                     text = ""
                     extra_info = {}
                 
                 return text, extra_info
             except Exception as e:
                 stack_trace = traceback.format_exc()
-                logger.error(f"[SERVER-ASR] ASR处理异常: {e}\n{stack_trace}")
+                self.logger.error(f"[SERVER-ASR] ASR处理异常: {e}\n{stack_trace}")
                 return "", {}
     
     def record_text_index(self, text, text_index=0):
@@ -550,10 +552,29 @@ class ConnectionManager:
         
         # 1. 提取SDP信息
         try:
-            offer_sdp = offer_data.get("sdp", {})
-            type_ = offer_sdp.get("type")
-            sdp = offer_sdp.get("sdp")
-            
+            # 处理不同格式的offer_data
+            if isinstance(offer_data, dict):
+                # 如果offer_data是字典，尝试获取sdp字段
+                offer_sdp = offer_data.get("sdp", {})
+                if isinstance(offer_sdp, dict):
+                    # 如果offset_sdp是字典，直接获取type和sdp
+                    type_ = offer_sdp.get("type")
+                    sdp = offer_sdp.get("sdp")
+                elif isinstance(offer_sdp, str):
+                    # 如果offset_sdp是字符串，将其作为sdp值，type设为"offer"
+                    type_ = "offer"
+                    sdp = offer_sdp
+                else:
+                    logger.error(f"无法解析的offer_sdp格式: {type(offer_sdp)} [客户端: {client_id}]")
+                    return
+            elif isinstance(offer_data, str):
+                # 如果offer_data是字符串，直接将其作为sdp值，type设为"offer"
+                type_ = "offer"
+                sdp = offer_data
+            else:
+                logger.error(f"无法解析的offer_data格式: {type(offer_data)} [客户端: {client_id}]")
+                return
+                
             if not type_ or not sdp:
                 logger.error(f"无效的Offer格式 [客户端: {client_id}]")
                 return
