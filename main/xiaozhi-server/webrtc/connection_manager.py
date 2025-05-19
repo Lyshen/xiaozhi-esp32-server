@@ -13,6 +13,7 @@ import time
 import weakref
 import copy
 import queue
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaStreamTrack
@@ -175,16 +176,55 @@ class WebRTCConnection:
     
     # 内部辅助类 - ASR处理器
     class ASRHelper:
-        def speech_to_text(self, audio_data, session_id):
+        async def speech_to_text(self, audio_data, session_id):
+            """异步处理语音转文本
+            
+            Args:
+                audio_data: 音频数据列表，每个元素是一个OPUS编码的音频数据包
+                session_id: 会话标识
+                
+            Returns:
+                tuple: (text, extra_info)返回识别文本和额外信息
+            """
             try:
-                # 尝试从应用上下文获取ASR服务
-                from core.providers.asr.doubao import DoubaoASR
-                asr_service = DoubaoASR()
-                text = asr_service.speech_to_text(audio_data, session_id)
-                return text
+                # 使用配置文件获取全局ASR服务
+                from config.config_loader import load_config
+                config = load_config()
+                
+                # 使用正确的方式获取ASR服务
+                from core.utils.util import initialize_modules
+                logger = self.logger
+                
+                # 尝试初始化ASR模块
+                modules = initialize_modules(logger, config, init_asr=True)
+                asr_provider = modules.get("asr")
+                
+                if asr_provider is None:
+                    # 如果无法通过initialize_modules获取，尝试直接创建ASR服务
+                    from core.providers.asr.doubao import ASRProvider
+                    select_asr_module = config["selected_module"]["ASR"]
+                    asr_config = config["ASR"][select_asr_module]
+                    asr_provider = ASRProvider(asr_config, False)
+                
+                logger.warning(f"[SERVER-ASR] 获取到ASR服务: {type(asr_provider).__name__}")
+                
+                # 调用ASR服务进行语音识别
+                # 注意：asr_provider.speech_to_text是异步方法，返回(text, extra_info)
+                text, extra_info = await asr_provider.speech_to_text(audio_data, session_id)
+                
+                # 在日志中记录识别结果
+                if text and len(text.strip()) > 0:
+                    logger.warning(f"[SERVER-ASR] 识别成功: '{text}'")
+                else:
+                    logger.warning(f"[SERVER-ASR] 识别为空或失败")
+                    text = ""
+                    extra_info = {}
+                
+                return text, extra_info
             except Exception as e:
-                logging.error(f"ASR处理异常: {e}")
-                return ""
+                stack_trace = traceback.format_exc()
+                logger.error(f"[SERVER-ASR] ASR处理异常: {e}\n{stack_trace}")
+                return "", {}
     
     def record_text_index(self, text, text_index=0):
         """记录大模型输出文本的首尾索引"""
@@ -659,6 +699,21 @@ class ConnectionManager:
         ndarray = frame.to_ndarray()
         return ndarray.tobytes()
     
+    def associate_websocket(self, client_id, websocket):
+        """
+        关联WebRTC连接和WebSocket连接
+        
+        参数:
+        client_id: 客户端 ID
+        websocket: 客户端的WebSocket连接
+        """
+        if client_id in self.webrtc_connections:
+            conn = self.webrtc_connections[client_id]
+            conn.websocket = websocket
+            logger.warning(f"[SERVER-CONNECTION] 已关联WebSocket和WebRTC连接: {client_id}")
+            return True
+        return False
+        
     async def process_audio_frame(self, frame, client_id):
         """
         处理WebRTC音频帧
@@ -741,22 +796,48 @@ class ConnectionManager:
                 conn.asr_server_receive = False
                 
                 # 直接调用ASR接口处理累积的音频数据
-                text, _ = await conn.asr.speech_to_text(conn.asr_audio, conn.session_id)
-                logger.warning(f"[SERVER-AUDIO] ASR识别结果: '{text}'")
+                try:
+                    text, extra_info = await conn.asr.speech_to_text(conn.asr_audio, conn.session_id)
+                    logger.warning(f"[SERVER-AUDIO] ASR识别结果: '{text}'")
+                except Exception as e:
+                    logger.error(f"[SERVER-AUDIO-ERROR] ASR处理失败: {e}")
+                    text = ""
+                    extra_info = {}
+                    
+                # 清理ASR缓冲区，避免重复处理
+                conn.asr_audio = []
                 
                 # 处理识别文本
                 if text and len(text.strip()) > 0:
-                    # 处理用户意图
-                    intent_handled = await handle_user_intent(conn, text)
-                    if not intent_handled:
-                        # 没有特殊意图，继续常规聊天
-                        await send_stt_message(conn, text)
-                        if hasattr(conn, 'use_function_call_mode') and conn.use_function_call_mode:
-                            # 使用function calling聊天
-                            conn.executor.submit(conn.chat_with_function_calling, text)
-                        else:
-                            # 使用普通聊天
-                            conn.executor.submit(conn.chat, text)
+                    # 先检查WebSocket连接是否存在
+                    if conn.websocket is None:
+                        logger.warning(f"[SERVER-AUDIO] 检测到WebSocket连接不存在，无法发送ASR结果。仅记录结果：{text}")
+                        
+                        # 尝试使用备选方法通知客户端
+                        try:
+                            # 将ASR结果保存到服务器，让客户端主动查询
+                            conn.last_asr_result = text
+                            logger.warning(f"[SERVER-AUDIO] 已保存ASR结果到连接对象: {text}")
+                        except Exception as e:
+                            logger.error(f"[SERVER-AUDIO] 备用方法也失败: {e}")
+                    else:
+                        try:
+                            # 处理用户意图
+                            intent_handled = await handle_user_intent(conn, text)
+                            if not intent_handled:
+                                # 没有特殊意图，继续常规聊天
+                                await send_stt_message(conn, text)
+                                if hasattr(conn, 'use_function_call_mode') and conn.use_function_call_mode:
+                                    # 使用function calling聊天
+                                    conn.executor.submit(conn.chat_with_function_calling, text)
+                                else:
+                                    # 使用普通聊天
+                                    conn.executor.submit(conn.chat, text)
+                        except Exception as e:
+                            logger.error(f"[SERVER-AUDIO-ERROR] 处理ASR结果时发生错误: {e}")
+                            logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
+                            # 尝试重置连接状态
+                            conn.asr_server_receive = True
                 
                 # 清空音频缓冲区，准备下一轮收集
                 conn.asr_audio.clear()
