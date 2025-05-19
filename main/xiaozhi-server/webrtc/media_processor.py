@@ -150,6 +150,10 @@ class AudioProcessor:
         self.channels = 1  # 单声道
         self.frame_size = 960  # 每帧采样数 (60ms @ 16kHz)
         
+        # 统计信息
+        self.audio_packets = 0  # 音频数据包计数
+        self.audio_bytes = 0    # 音频数据字节计数
+        
         logger.info(f"音频处理器创建 [客户端: {client_id}]")
     
     async def start(self):
@@ -208,15 +212,16 @@ class AudioProcessor:
                 # 处理每一帧
                 for frame_samples in frames:
                     # 创建PyAV音频帧
+                    # 形状调整为[1, samples]而非[-1, channels]
                     frame = av.AudioFrame.from_ndarray(
-                        frame_samples.reshape(-1, self.channels),
+                        frame_samples.reshape(1, -1),
                         format="s16",
                         layout="mono" if self.channels == 1 else "stereo"
                     )
                     frame.sample_rate = self.sample_rate
                     
                     # 将帧放入队列
-                    self.frame_queue.put(frame)
+                    await self.frame_queue.put(frame)
                     
                     # 记录统计信息
                     self.audio_packets += 1
@@ -225,10 +230,6 @@ class AudioProcessor:
             except Exception as e:
                 logger.error(f"处理音频数据时出错: {str(e)}")
                 raise
-            frame.sample_rate = self.sample_rate
-            
-            # 将帧放入队列
-            await self.frame_queue.put(frame)
             
         except Exception as e:
             logger.exception(f"处理音频数据时出错 [客户端: {self.client_id}]: {e}")
@@ -278,19 +279,34 @@ class AudioProcessor:
         Args:
             frame: 音频帧
         """
-        # 将此处替换为您原有的音频处理逻辑
-        # 例如：语音识别、音频转写等
-        
-        # 如果app_context可用，可以调用原有功能
-        if self.app_context and hasattr(self.app_context, 'audio_processor'):
-            # 将 PyAV 帧转换为原系统期望的格式
-            ndarray = frame.to_ndarray()
-            bytes_data = ndarray.tobytes()
+        try:
+            # 输出谁试信息 - 正确访问AV音频格式属性
+            # PyAV中是通过layout访问通道信息
+            logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
             
-            # 假设原系统有这样的接口
-            if hasattr(self.app_context.audio_processor, 'process_audio'):
-                await self.app_context.audio_processor.process_audio(
-                    self.client_id, 
-                    bytes_data, 
-                    sample_rate=frame.sample_rate
-                )
+            # 将音频帧传递到WebRTC连接管理器
+            if self.app_context and hasattr(self.app_context, 'webrtc_manager'):
+                # 直接调用connection_manager.py中的process_audio_frame方法
+                logger.warning(f"[XIAOZHI-SERVER] 将音频帧传递给WebRTC连接管理器")
+                connection_manager = self.app_context.webrtc_manager
+                await connection_manager.process_audio_frame(frame, self.client_id)
+            else:
+                # 如果没有WebRTC管理器，尝试使用原有音频处理
+                logger.warning(f"[XIAOZHI-SERVER] WebRTC管理器不可用，尝试使用原有音频处理逻辑")
+                if self.app_context and hasattr(self.app_context, 'audio_processor'):
+                    # 将 PyAV 帧转换为原系统期望的格式
+                    ndarray = frame.to_ndarray()
+                    bytes_data = ndarray.tobytes()
+                    
+                    # 调用原有的音频处理接口
+                    if hasattr(self.app_context.audio_processor, 'process_audio'):
+                        logger.warning(f"[XIAOZHI-SERVER] 调用原有音频处理逻辑")
+                        await self.app_context.audio_processor.process_audio(
+                            self.client_id, 
+                            bytes_data, 
+                            sample_rate=frame.sample_rate
+                        )
+        except Exception as e:
+            logger.error(f"[XIAOZHI-SERVER-ERROR] 处理音频帧时出错: {str(e)}")
+            import traceback
+            logger.error(f"[XIAOZHI-SERVER-ERROR] 堆栈跟踪: {traceback.format_exc()}")
