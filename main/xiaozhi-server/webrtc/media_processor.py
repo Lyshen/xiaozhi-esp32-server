@@ -192,48 +192,48 @@ class AudioProcessor:
             # WebRTC默认使用Opus编码，解码后是PCM 16-bit
             samples = np.frombuffer(audio_data, dtype=np.int16)
             
-            # 记录音频数据信息
-            logger.debug(f"接收到音频数据: size={len(audio_data)} bytes, samples={samples.size}")
+            # 检查音频数据大小是否是预期帧大小的倍数 - 支持两种常见的帧大小
+            frame_size_20ms = 320  # 20毫秒@16kHz=320个样本
+            frame_size_64ms = 1024  # 64毫秒@16kHz=1024个样本 (WebRTC常用)
             
-            try:
-                # WebRTC的音频帧通常是16kHz采样率，单通道
-                # 根据采样率和通道数计算帧长
-                frame_size = int(self.sample_rate * 0.02)  # 20ms帧长
-                
-                # 确保数据长度是帧大小的倍数
-                if samples.size % frame_size != 0:
-                    logger.warning(f"音频数据大小 {samples.size} 不是帧大小 {frame_size} 的倍数")
-                    # 截断到最近的帧边界
-                    samples = samples[:samples.size // frame_size * frame_size]
-                
-                # 将数据分割成多个帧
-                frames = np.split(samples, samples.size // frame_size)
-                
-                # 处理每一帧
-                for frame_samples in frames:
-                    # 创建PyAV音频帧
-                    # 形状调整为[1, samples]而非[-1, channels]
-                    frame = av.AudioFrame.from_ndarray(
-                        frame_samples.reshape(1, -1),
-                        format="s16",
-                        layout="mono" if self.channels == 1 else "stereo"
-                    )
-                    frame.sample_rate = self.sample_rate
-                    
-                    # 将帧放入队列
-                    await self.frame_queue.put(frame)
-                    
-                    # 记录统计信息
-                    self.audio_packets += 1
-                    self.audio_bytes += len(audio_data)
-                    
-            except Exception as e:
-                logger.error(f"处理音频数据时出错: {str(e)}")
-                raise
+            if samples.size % frame_size_20ms == 0:
+                frame_size = frame_size_20ms
+                logger.debug(f"使用帧大小: {frame_size_20ms} (20ms)")
+            elif samples.size % frame_size_64ms == 0:
+                frame_size = frame_size_64ms
+                logger.debug(f"使用帧大小: {frame_size_64ms} (64ms)")
+            else:
+                frame_size = frame_size_20ms  # 默认使用320
+                logger.warning(f"音频数据大小 {samples.size} 不是标准帧大小的倍数，使用默认值: {frame_size}")
             
+            # 截断到最近的帧边界
+            samples = samples[:samples.size // frame_size * frame_size]
+            
+            # 将数据分割成多个帧
+            frames = np.split(samples, samples.size // frame_size)
+            
+            # 处理每一帧
+            for frame_samples in frames:
+                # 创建PyAV音频帧
+                # 形状调整为[1, samples]而非[-1, channels]
+                frame = av.AudioFrame.from_ndarray(
+                    frame_samples.reshape(1, -1),
+                    format="s16",
+                    layout="mono" if self.channels == 1 else "stereo"
+                )
+                frame.sample_rate = self.sample_rate
+                
+                # 将帧放入队列
+                await self.frame_queue.put(frame)
+                
+                # 记录统计信息
+                self.audio_packets += 1
+                self.audio_bytes += len(audio_data)
+                
         except Exception as e:
-            logger.exception(f"处理音频数据时出错 [客户端: {self.client_id}]: {e}")
-    
+            logger.error(f"处理音频数据时出错: {str(e)}")
+            raise
+            
     async def process_audio_frame(self, frame):
         """
         处理音频帧
@@ -284,28 +284,78 @@ class AudioProcessor:
             # PyAV中是通过layout访问通道信息
             logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
             
-            # 将音频帧传递到WebRTC连接管理器
+            # 尝试获取WebRTC连接管理器
+            connection_manager = None
+            
+            # 方式1: 直接从 app_context 获取
             if self.app_context and hasattr(self.app_context, 'webrtc_manager'):
-                # 直接调用connection_manager.py中的process_audio_frame方法
-                logger.warning(f"[XIAOZHI-SERVER] 将音频帧传递给WebRTC连接管理器")
                 connection_manager = self.app_context.webrtc_manager
+                logger.info(f"[XIAOZHI-SERVER] 从 app_context.webrtc_manager 获取到WebRTC连接管理器")
+            
+            # 方式2: 通过 webrtc_module 获取
+            elif self.app_context and hasattr(self.app_context, 'webrtc_module'):
+                webrtc_module = self.app_context.webrtc_module
+                # 检查是否直接有connection_manager属性
+                if hasattr(webrtc_module, 'connection_manager'):
+                    connection_manager = webrtc_module.connection_manager
+                    logger.info(f"[XIAOZHI-SERVER] 从 webrtc_module.connection_manager 获取到WebRTC连接管理器")
+                # 检查是否有get_connection_manager方法
+                elif hasattr(webrtc_module, 'get_connection_manager'):
+                    connection_manager = webrtc_module.get_connection_manager()
+                    logger.info(f"[XIAOZHI-SERVER] 通过 webrtc_module.get_connection_manager() 获取到WebRTC连接管理器")
+            
+            # 方式3: 尝试从全局模块导入
+            if not connection_manager:
+                try:
+                    import sys
+                    try:
+                        from main.xiaozhi_server.webrtc.connection_manager import ConnectionManager
+                        logger.warning(f"[XIAOZHI-SERVER] 尝试从主模块导入ConnectionManager")
+                        # 对于已存在的全局实例，可以查找 sys.modules
+                        for module_name, module in sys.modules.items():
+                            if hasattr(module, 'connection_manager') and isinstance(module.connection_manager, ConnectionManager):
+                                connection_manager = module.connection_manager
+                                logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
+                                break
+                    except ImportError:
+                        from webrtc.connection_manager import ConnectionManager
+                        logger.warning(f"[XIAOZHI-SERVER] 尝试从相对路径导入ConnectionManager")
+                        for module_name, module in sys.modules.items():
+                            if hasattr(module, 'connection_manager') and isinstance(module.connection_manager, ConnectionManager):
+                                connection_manager = module.connection_manager
+                                logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
+                                break
+                except Exception as e:
+                    logger.warning(f"[XIAOZHI-SERVER] 无法导入ConnectionManager: {str(e)}")
+            
+            # 如果找到连接管理器，则调用process_audio_frame方法
+            if connection_manager:
+                logger.warning(f"[XIAOZHI-SERVER] 成功获取到WebRTC连接管理器，传递音频帧")
                 await connection_manager.process_audio_frame(frame, self.client_id)
             else:
                 # 如果没有WebRTC管理器，尝试使用原有音频处理
                 logger.warning(f"[XIAOZHI-SERVER] WebRTC管理器不可用，尝试使用原有音频处理逻辑")
-                if self.app_context and hasattr(self.app_context, 'audio_processor'):
-                    # 将 PyAV 帧转换为原系统期望的格式
-                    ndarray = frame.to_ndarray()
-                    bytes_data = ndarray.tobytes()
-                    
-                    # 调用原有的音频处理接口
-                    if hasattr(self.app_context.audio_processor, 'process_audio'):
-                        logger.warning(f"[XIAOZHI-SERVER] 调用原有音频处理逻辑")
+                
+                # 转换PyAV音频帧为字节数据
+                frame_bytes = frame.to_ndarray().tobytes()
+                
+                # 直接使用我们自己的处理方法来处理音频帧
+                logger.warning(f"[XIAOZHI-SERVER] 使用内部音频处理逻辑")
+                await self.process_audio_data(frame_bytes)
+                
+                # 如果app_context有单独的audio_processor，也可以尝试调用
+                if self.app_context and hasattr(self.app_context, 'audio_processor') and \
+                   hasattr(self.app_context.audio_processor, 'process_audio'):
+                    logger.warning(f"[XIAOZHI-SERVER] 同时调用app_context的音频处理逻辑")
+                    try:
                         await self.app_context.audio_processor.process_audio(
-                            self.client_id, 
-                            bytes_data, 
+                            self.client_id,
+                            frame_bytes,  # 使用已定义的frame_bytes变量
                             sample_rate=frame.sample_rate
                         )
+                    except Exception as e:
+                        logger.error(f"[XIAOZHI-SERVER] 调用app_context音频处理器失败: {str(e)}")
+                        # 继续执行，因为我们已经使用内部处理方法处理了音频
         except Exception as e:
             logger.error(f"[XIAOZHI-SERVER-ERROR] 处理音频帧时出错: {str(e)}")
             import traceback
