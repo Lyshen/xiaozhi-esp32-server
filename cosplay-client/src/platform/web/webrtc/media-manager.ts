@@ -139,24 +139,68 @@ export class MediaManager {
     const inputBuffer = event.inputBuffer;
     const inputData = inputBuffer.getChannelData(0);
 
+    // 获取全局配置变量
+    const globalConfig = (window as any).XIAOZHI_CONFIG || {};
+    const codecInfo = (window as any).XIAOZHI_CODEC_INFO || {};
+    
+    // 使用配置和相关音频格式信息
+    const configFormat = globalConfig.audioConfig?.format || 'unknown';
+    const sdpFormat = codecInfo.name || 'unknown';
+    
+    // 只有当WebRTC连接建立且SDP协商完成后才使用Opus
+    const audioFormat = this.webrtcConnected && codecInfo.negotiated ? 'opus' : 'pcm';
+    
+    // 强制日志显示
+    console.log(`[CLIENT-AUDIO-DEBUG] WebRTC连接状态: ${this.webrtcConnected}, 编解码器协商状态: ${JSON.stringify(codecInfo)}`);
+
+    
     // 转换为16bit PCM
     const pcmData = this.floatTo16BitPCM(inputData);
+    
+    // 处理音频数据 - 根据实际应用的格式
+    let audioDataToSend;
+    let actualFormat = audioFormat;
+    
+    if (audioFormat === 'opus' && this.peerConnection) {
+      // 由于我们正在使用WebRTC发送音频数据，
+      // 且WebRTC已经协商为Opus编解码器，
+      // 我们不需要在JavaScript中手动进行Opus编码
+      // WebRTC栈会自动处理编码
+      audioDataToSend = pcmData.buffer;
+      console.log(`[CLIENT-CODEC] 使用WebRTC内置编解码器: ${sdpFormat}`);
+    } else {
+      // 如果不是Opus或未协商成功，则使用PCM
+      audioDataToSend = pcmData.buffer;
+      actualFormat = 'pcm';
+    }
+    
+    // 在第一个包或每50包打印详细的音频格式信息
+    if (this.audioPacketCounter === 0 || this.audioPacketCounter % 50 === 0) {
+      console.log(`[CLIENT-AUDIO-FORMAT] 音频格式详情:
+        - 配置格式: ${configFormat}
+        - 协商编解码器: ${sdpFormat}
+        - 当前使用格式: ${actualFormat}
+        - 采样率: ${inputBuffer.sampleRate} Hz
+        - 通道数: ${inputBuffer.numberOfChannels}
+        - 大小: ${audioDataToSend.byteLength} 字节
+        - WebRTC状态: ${this.webrtcConnected ? '已连接' : '未连接'}`);
+    }
     
     // 增加音频包计数
     this.audioPacketCounter++;
     const now = Date.now();
     
     // 每个音频包都记录日志（为了调试需要）
-    console.log(`[CLIENT-AUDIO] 发送音频数据包 #${this.audioPacketCounter}, 大小: ${pcmData.buffer.byteLength} 字节, 时间: ${new Date().toISOString()}`);
+    console.log(`[CLIENT-AUDIO] 发送音频数据包 #${this.audioPacketCounter}, 格式: ${actualFormat}, 大小: ${audioDataToSend.byteLength} 字节, 时间: ${new Date().toISOString()}`);
     
     // 每10个数据包打印一次统计信息
     if (this.audioPacketCounter % 10 === 0) {
-      console.log(`[CLIENT-AUDIO] 已发送 ${this.audioPacketCounter} 个音频数据包, 总计 ${this.audioPacketCounter * pcmData.buffer.byteLength} 字节`);
+      console.log(`[CLIENT-AUDIO] 已发送 ${this.audioPacketCounter} 个音频数据包, 总计 ${this.audioPacketCounter * audioDataToSend.byteLength} 字节`);
     }
     
     // 如果设置了回调，则调用回调
     if (this.audioCallback) {
-      this.audioCallback(pcmData.buffer);
+      this.audioCallback(audioDataToSend);
     }
 
     // 发出事件

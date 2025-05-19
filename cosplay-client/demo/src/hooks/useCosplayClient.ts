@@ -45,7 +45,7 @@ export function useCosplayClient({
           delay: 2000,
         },
         audioConfig: {
-          format: 'pcm', // 切换为PCM格式，配合WebRTC使用
+          format: 'opus', // 使用Opus格式以获得更好的音频质量
           sampleRate: 16000,
           channels: 1,
           frameDuration: 20, // 使用更短的帧长度以减少延迟
