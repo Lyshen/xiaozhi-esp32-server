@@ -138,6 +138,54 @@ class ConnectionManager:
         
         return pc
     
+    async def send_websocket_message(self, websocket, message):
+        """
+        尝试使用各种方法发送WebSocket消息
+        
+        Args:
+            websocket: WebSocket对象
+            message: 要发送的消息对象
+            
+        Returns:
+            bool: 是否成功发送
+        """
+        if not self.is_websocket_open(websocket):
+            logger.error(f"WebSocket不可用，无法发送消息")
+            return False
+        
+        # 输出详细的WebSocket类型信息以便调试
+        logger.info(f"WebSocket类型: {type(websocket)}")
+            
+        # 首先检查是否有send_json方法 (对aiohttp.WebSocketResponse)
+        if hasattr(websocket, 'send_json'):
+            try:
+                await websocket.send_json(message)
+                logger.info(f"WebSocket.send_json方法成功")
+                return True
+            except Exception as e:
+                logger.warning(f"WebSocket.send_json方法失败: {e}")
+        
+        # 尝试使用send方法 (对标准WebSocket)
+        if hasattr(websocket, 'send'):
+            try:
+                await websocket.send(json.dumps(message))
+                logger.info(f"WebSocket.send方法成功")
+                return True
+            except Exception as e:
+                logger.warning(f"WebSocket.send方法失败: {e}")
+            
+        # 尝试使用send_str方法 (对aiohttp.WebSocketResponse的另一种方式)
+        if hasattr(websocket, 'send_str'):
+            try:
+                await websocket.send_str(json.dumps(message))
+                logger.info(f"WebSocket.send_str方法成功")
+                return True
+            except Exception as e:
+                logger.warning(f"WebSocket.send_str方法失败: {e}")
+            
+        logger.error(f"所有WebSocket发送方法均失败")
+        return False
+    
     def is_websocket_open(self, ws):
         """
         检查WebSocket是否打开并可用
@@ -296,13 +344,20 @@ class ConnectionManager:
                     try:
                         # 先发送CONNECTED消息
                         logger.info(f"发送CONNECTED消息 [客户端: {client_id}]")
-                        await websocket.send(json.dumps(connected_message))
+                        if await self.send_websocket_message(websocket, connected_message):
+                            logger.info(f"CONNECTED消息发送成功 [客户端: {client_id}]")
+                        else:
+                            logger.error(f"CONNECTED消息发送失败 [客户端: {client_id}]")
+                            raise Exception("CONNECTED消息发送失败")
                         
                         # 然后发送Answer
                         logger.info(f"准备通过传入的WebSocket发送Answer [客户端: {client_id}]")
-                        await websocket.send(json.dumps(answer_data))
-                        logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
-                        sent_answer = True
+                        if await self.send_websocket_message(websocket, answer_data):
+                            logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
+                            sent_answer = True
+                        else:
+                            logger.error(f"Answer消息发送失败 [客户端: {client_id}]")
+                            raise Exception("Answer消息发送失败")
                     except Exception as e:
                         logger.error(f"使用传入的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
                         import traceback
@@ -320,13 +375,20 @@ class ConnectionManager:
                         try:
                             # 先发送CONNECTED消息
                             logger.info(f"发送CONNECTED消息 [客户端: {client_id}]")
-                            await conn.websocket.send(json.dumps(connected_message))
+                            if await self.send_websocket_message(conn.websocket, connected_message):
+                                logger.info(f"CONNECTED消息发送成功 [客户端: {client_id}]")
+                            else:
+                                logger.error(f"CONNECTED消息发送失败 [客户端: {client_id}]")
+                                raise Exception("CONNECTED消息发送失败")
                             
                             # 然后发送Answer
                             logger.info(f"准备通过已关联的WebSocket发送Answer [客户端: {client_id}]")
-                            await conn.websocket.send(json.dumps(answer_data))
-                            logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
-                            sent_answer = True
+                            if await self.send_websocket_message(conn.websocket, answer_data):
+                                logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
+                                sent_answer = True
+                            else:
+                                logger.error(f"Answer消息发送失败 [客户端: {client_id}]")
+                                raise Exception("Answer消息发送失败")
                         except Exception as e:
                             logger.error(f"使用关联的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
                             import traceback
@@ -746,30 +808,26 @@ class ConnectionManager:
                     try:
                         # 先发送CONNECTED消息
                         if hasattr(conn, 'pending_connected_message') and conn.pending_connected_message:
-                            connected_json = json.dumps(conn.pending_connected_message)
                             logger.info(f"[重试机制] 准备发送CONNECTED消息 [客户端: {client_id}]")
                             
-                            if hasattr(conn.websocket, 'send_json'):
-                                await conn.websocket.send_json(conn.pending_connected_message)
+                            # 使用统一的发送方法
+                            if await self.send_websocket_message(conn.websocket, conn.pending_connected_message):
+                                logger.info(f"[重试机制] 发送CONNECTED消息成功 [客户端: {client_id}]")
+                                # 等待一小段时间，确保客户端收到CONNECTED消息
+                                await asyncio.sleep(0.2)
                             else:
-                                await conn.websocket.send(connected_json)
-                                
-                            logger.info(f"[重试机制] 发送CONNECTED消息成功 [客户端: {client_id}]")
-                            # 等待一小段时间，确保客户端收到CONNECTED消息
-                            await asyncio.sleep(0.2)
+                                logger.error(f"[重试机制] 发送CONNECTED消息失败 [客户端: {client_id}]")
+                                raise Exception("CONNECTED消息发送失败")
                         
                         # 然后发送Answer
-                        answer_json = json.dumps(conn.pending_answer)
-                        logger.info(f"[重试机制] 准备发送Answer [客户端: {client_id}, 数据长度: {len(answer_json)}]")
+                        logger.info(f"[重试机制] 准备发送Answer [客户端: {client_id}]")
                         
-                        if hasattr(conn.websocket, 'send_json'):
-                            logger.info(f"[重试机制] 使用send_json方法 [客户端: {client_id}]")
-                            await conn.websocket.send_json(conn.pending_answer)
+                        # 使用统一的发送方法
+                        if await self.send_websocket_message(conn.websocket, conn.pending_answer):
+                            logger.info(f"[重试机制] 重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
                         else:
-                            logger.info(f"[重试机制] 使用send+json.dumps方法 [客户端: {client_id}]")
-                            await conn.websocket.send(answer_json)
-                            
-                        logger.info(f"[重试机制] 重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
+                            logger.error(f"[重试机制] 发送Answer失败 [客户端: {client_id}]")
+                            raise Exception("Answer消息发送失败")
                         
                         # 清除待发送的消息
                         conn.pending_connected_message = None
