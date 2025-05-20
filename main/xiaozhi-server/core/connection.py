@@ -42,11 +42,16 @@ class TTSException(RuntimeError):
 
 class ConnectionHandler:
     def __init__(
-        self, config: Dict[str, Any], _vad, _asr, _llm, _tts, _memory, _intent
+        self, config: Dict[str, Any], _vad, _asr, _llm, _tts, _memory, _intent, app_context=None
     ):
         self.config = copy.deepcopy(config)
         self.logger = setup_logging()
         self.auth = AuthMiddleware(config)
+        
+        # 保存应用上下文，用于获取WebRTC模块
+        self.app_context = app_context
+        self.webrtc_module = getattr(app_context, 'webrtc_module', None) if app_context else None
+        self.use_webrtc = self.webrtc_module and self.webrtc_module.is_webrtc_enabled()
 
         self.need_bind = False
         self.bind_code = None
@@ -165,6 +170,21 @@ class ConnectionHandler:
             private_config = self._initialize_private_config()
             # 异步初始化
             self.executor.submit(self._initialize_components, private_config)
+            
+            # 如果有WebRTC模块 - 检查是否可以通过WebRTC进行音频传输
+            if self.use_webrtc and self.webrtc_module:
+                device_id = self.headers.get("device-id")
+                if device_id:
+                    # 关联WebSocket和WebRTC连接
+                    try:
+                        associated = self.webrtc_module.connection_manager.associate_websocket(device_id, ws)
+                        if associated:
+                            self.logger.bind(tag=TAG).info(f"已成功关联WebSocket和WebRTC连接，设备ID: {device_id}")
+                    except Exception as e:
+                        self.logger.bind(tag=TAG).error(f"关联WebRTC连接失败: {e}")
+                else:
+                    self.logger.bind(tag=TAG).warning("客户端未提供device-id，无法关联WebRTC连接")
+            
             # tts 消化线程
             self.tts_priority_thread = threading.Thread(
                 target=self._tts_priority_thread, daemon=True
@@ -778,16 +798,16 @@ class ConnectionHandler:
                         self.logger.bind(tag=TAG).error(
                             f"TTS出错： file is empty: {text_index}: {text}"
                         )
+                    # 如果文件存在则处理
+                    self.logger.bind(tag=TAG).debug(
+                        f"TTS生成：文件路径: {tts_file}"
+                    )
+                    if os.path.exists(tts_file):
+                        opus_datas, duration = self.tts.audio_to_opus_data(tts_file)
                     else:
-                        self.logger.bind(tag=TAG).debug(
-                            f"TTS生成：文件路径: {tts_file}"
+                        self.logger.bind(tag=TAG).error(
+                            f"TTS出错：文件不存在{tts_file}"
                         )
-                        if os.path.exists(tts_file):
-                            opus_datas, duration = self.tts.audio_to_opus_data(tts_file)
-                        else:
-                            self.logger.bind(tag=TAG).error(
-                                f"TTS出错：文件不存在{tts_file}"
-                            )
                 except TimeoutError:
                     self.logger.bind(tag=TAG).error("TTS超时")
                 except Exception as e:

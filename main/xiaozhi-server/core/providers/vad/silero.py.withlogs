@@ -24,28 +24,13 @@ class VADProvider(VADProviderBase):
         self.vad_threshold = float(config.get("threshold", 0.5))
         self.silence_threshold_ms = int(config.get("min_silence_duration_ms", 1000))
 
-    def is_vad(self, conn, audio_data):
+    def is_vad(self, conn, opus_packet):
         try:
-            # 检查是否为PCM格式还是Opus格式
-            # PCM数据通常以int16格式存储，尝试直接解析
-            try:
-                # 尝试将数据解析为PCM格式
-                _ = np.frombuffer(audio_data, dtype=np.int16)
-                # 如果可以解析为int16数组，则认为是PCM数据
-                pcm_frame = audio_data
-                logger.info(f"[VAD-DEBUG] 检测到PCM数据，长度: {len(pcm_frame)}字节")
-            except Exception:
-                # 如果不能解析为PCM，尝试作为Opus解码
-                try:
-                    logger.info(f"[VAD-DEBUG] 尝试作为Opus数据解码，长度: {len(audio_data)}字节")
-                    pcm_frame = self.decoder.decode(audio_data, 960)
-                    logger.info(f"[VAD-DEBUG] Opus解码成功，解码后长度: {len(pcm_frame)}字节")
-                except Exception as e:
-                    # 解码失败，记录错误并返回False
-                    logger.info(f"解码错误: {e}")
-                    return False
-                
-            # 将PCM数据添加到缓冲区
+            # 添加数据包调试信息
+            logger.bind(tag=TAG).info(f"接收到Opus数据包, 类型: {type(opus_packet)}, 大小: {len(opus_packet)}字节")
+            logger.bind(tag=TAG).info(f"数据包前16字节: {' '.join([f'{b:02x}' for b in opus_packet[:16]])}")
+            
+            pcm_frame = self.decoder.decode(opus_packet, 960)
             conn.client_audio_buffer.extend(pcm_frame)  # 将新数据加入缓冲区
 
             # 处理缓冲区中的完整帧（每次处理512采样点）
@@ -78,7 +63,15 @@ class VADProvider(VADProviderBase):
 
             return client_have_voice
         except opuslib_next.OpusError as e:
+            # 详细记录解码错误信息
             logger.bind(tag=TAG).info(f"解码错误: {e}")
+            logger.bind(tag=TAG).info(f"错误Opus数据包详情: 类型={type(opus_packet)}, 大小={len(opus_packet)}字节")
+            if len(opus_packet) > 0:
+                try:
+                    # 记录数据包的前16个字节（十六进制格式）
+                    hex_bytes = ' '.join([f'{b:02x}' for b in opus_packet[:16]])
+                    logger.bind(tag=TAG).info(f"数据包前16字节: {hex_bytes}")
+                except Exception as hex_error:
+                    logger.bind(tag=TAG).info(f"无法显示数据包内容: {hex_error}")
         except Exception as e:
             logger.bind(tag=TAG).error(f"Error processing audio packet: {e}")
-

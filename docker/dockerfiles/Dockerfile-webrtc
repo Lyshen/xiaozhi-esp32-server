@@ -1,0 +1,48 @@
+# 第一阶段：构建Python依赖
+FROM python:3.10-slim AS builder
+
+WORKDIR /app
+
+COPY main/xiaozhi-server/requirements.txt .
+
+# 安装Python依赖 (包括WebRTC相关库)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 第二阶段：WebRTC测试镜像
+FROM python:3.10-slim
+
+WORKDIR /opt/xiaozhi-esp32-server
+
+# 安装系统依赖
+# 添加WebRTC所需的额外依赖
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libopus0 \
+    ffmpeg \
+    libvpx-dev \
+    libsrtp2-1 \
+    libavdevice-dev \
+    libavfilter-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# 从构建阶段复制Python包
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# 复制应用代码
+COPY main/xiaozhi-server .
+
+# 复制WebRTC配置示例
+COPY data/webrtc_config_sample.yaml /opt/xiaozhi-esp32-server/data/
+
+# 将WebRTC配置复制到默认配置文件
+RUN mkdir -p /opt/xiaozhi-esp32-server/data && \
+    cp webrtc_config_sample.yaml /opt/xiaozhi-esp32-server/data/.config.yaml || true
+
+# 暴露WebSocket服务器端口和WebRTC信令服务器端口
+EXPOSE 8000 8082
+
+# 启动应用
+CMD ["python", "app.py"]

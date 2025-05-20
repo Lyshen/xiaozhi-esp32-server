@@ -25,3 +25,8 @@ sherpa_onnx==1.11.0
 mcp==1.4.1
 cnlunar==0.2.0
 PySocks==1.7.1
+
+# WebRTC相关依赖
+aiortc>=1.3.2
+av>=9.0.0
+aioice>=0.7.6

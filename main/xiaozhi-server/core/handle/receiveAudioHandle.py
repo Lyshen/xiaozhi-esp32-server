@@ -9,10 +9,17 @@ TAG = __name__
 logger = setup_logging()
 
 
-async def handleAudioMessage(conn, audio):
+# 内部函数，处理音频数据的核心逻辑
+# 该函数可被两种方式调用：
+# 1. handleAudioMessage（原有Opus音频数据路径）
+# 2. WebRTC音频帧处理回调（新的WebRTC数据路径）
+async def process_audio_internal(conn, audio):
+    # 检查是否可以接收
     if not conn.asr_server_receive:
         logger.bind(tag=TAG).debug(f"前期数据处理中，暂停接收")
         return
+    
+    # 判断是否有语音
     if conn.client_listen_mode == "auto":
         have_voice = conn.vad.is_vad(conn, audio)
     else:
@@ -26,8 +33,11 @@ async def handleAudioMessage(conn, audio):
             -10:
         ]  # 保留最新的10帧音频内容，解决ASR句首丢字问题
         return
+    
+    # 有语音情况下的处理
     conn.client_no_voice_last_time = 0.0
     conn.asr_audio.append(audio)
+    
     # 如果本段有声音，且已经停止了
     if conn.client_voice_stop:
         conn.client_abort = False
@@ -45,6 +55,19 @@ async def handleAudioMessage(conn, audio):
                 conn.asr_server_receive = True
         conn.asr_audio.clear()
         conn.reset_vad_states()
+                
+# 主要对外函数，处理来自普通WebSocket的音频数据
+async def handleAudioMessage(conn, audio, ws=None):
+    # 检查是否使用WebRTC处理音频
+    if hasattr(conn, 'use_webrtc') and conn.use_webrtc and conn.webrtc_module and conn.webrtc_module.should_replace_opus():
+        client_id = conn.headers.get("device-id", "unknown")
+        logger.bind(tag=TAG).debug(f"WebSocket音频使用WebRTC处理 [客户端: {client_id}]")
+        await conn.webrtc_module.process_audio(client_id, audio)
+        return
+        
+    # 原有的Opus处理逻辑，调用公共函数
+    logger.bind(tag=TAG).debug(f"WebSocket音频使用原有Opus处理")
+    await process_audio_internal(conn, audio)
 
 
 async def startToChat(conn, text):
