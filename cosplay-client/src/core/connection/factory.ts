@@ -12,6 +12,9 @@ export class DefaultConnectionFactory implements ConnectionFactory {
    * @returns 连接实例
    */
   createConnection(config: ClientConfig): Connection {
+    if (!config || !config.serverUrl) {
+      throw new Error('Invalid client configuration: serverUrl is required');
+    }
     return new WebSocketConnection(config);
   }
 }
