@@ -28,9 +28,9 @@ export interface WebRTCConfig {
  * WebRTC连接事件类型
  */
 export enum WebRTCEvent {
-  // 连接已建立
+  // WebRTC连接已建立
   CONNECTED = 'webrtc:connected',
-  // 连接已关闭
+  // WebRTC连接已关闭
   DISCONNECTED = 'webrtc:disconnected',
   // 接收到远程音频
   AUDIO_RECEIVED = 'webrtc:audio_received',
@@ -38,6 +38,10 @@ export enum WebRTCEvent {
   AUDIO_SENT = 'webrtc:audio_sent',
   // 连接发生错误
   ERROR = 'webrtc:error',
+  // 信令服务器连接已建立
+  SIGNALING_CONNECTED = 'signaling:connected',
+  // 信令服务器连接已关闭
+  SIGNALING_DISCONNECTED = 'signaling:disconnected',
 }
 
 /**
@@ -59,6 +63,8 @@ export enum SignalingMessageType {
   OFFER = 'offer',
   ANSWER = 'answer',
   ICE_CANDIDATE = 'ice-candidate',
+  PING = 'ping',
+  PONG = 'pong',
 }
 
 /**
