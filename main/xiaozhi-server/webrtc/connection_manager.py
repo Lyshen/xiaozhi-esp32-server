@@ -304,9 +304,10 @@ class ConnectionManager:
             await pc.setLocalDescription(answer)
             
             # 7. 发送Answer给客户端
+            # 修改Answer格式，使其符合WebRTC标准格式
             answer_data = {
                 "type": "answer",
-                "sdp": {
+                "payload": {
                     "type": pc.localDescription.type,
                     "sdp": pc.localDescription.sdp
                 },
