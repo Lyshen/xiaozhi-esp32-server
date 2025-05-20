@@ -26,6 +26,9 @@ export class WebRTCAudioConnection {
     this.eventEmitter = new EventEmitter();
     this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter);
     this.mediaManager = new MediaManager(this.eventEmitter);
+    
+    // 关键修复：将SignalingClient实例设置到MediaManager
+    this.mediaManager.setSignalingClient(this.signalingClient);
 
     // 设置信令消息处理
     this.eventEmitter.on(SignalingMessageType.OFFER, this.handleRemoteOffer.bind(this));

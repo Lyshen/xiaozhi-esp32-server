@@ -11,7 +11,7 @@ export class MediaManager {
   private mediaSource: MediaStreamAudioSourceNode | null = null;
   private audioProcessor: ScriptProcessorNode | null = null;
   private peerConnection: RTCPeerConnection | null = null;
-  private websocket: WebSocket | null = null;
+  private signalingClient: any = null; // 使用SignalingClient实例替代直接的WebSocket
   private webrtcConnected: boolean = false;
   private eventEmitter: EventEmitter;
   private isProcessing: boolean = false;
@@ -24,6 +24,17 @@ export class MediaManager {
    */
   constructor(eventEmitter: EventEmitter) {
     this.eventEmitter = eventEmitter;
+  }
+
+  /**
+   * 设置SignalingClient实例
+   * @param client SignalingClient实例
+   */
+  public setSignalingClient(client: any): void {
+    this.signalingClient = client;
+    console.log('[XIAOZHI-CLIENT] 已设置SignalingClient实例');
+    // 设置信令事件监听
+    this.setupSignalingEvents();
   }
 
   /**
@@ -304,11 +315,8 @@ export class MediaManager {
       this.peerConnection = null;
     }
 
-    // 关闭WebSocket连接
-    if (this.websocket) {
-      this.websocket.close();
-      this.websocket = null;
-    }
+    // 不需要手动关闭WebSocket，这由SignalingClient管理
+    this.signalingClient = null;
 
     if (this.audioProcessor) {
       this.audioProcessor.disconnect();
@@ -380,16 +388,17 @@ export class MediaManager {
       if (event.candidate) {
         console.log('[XIAOZHI-CLIENT] 发现新的ICE候选者');
         
-        // 关键修复：确保ICE候选者被正确发送到信令服务器
-        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-          const iceCandidateMessage = {
-            type: 'ice-candidate',
-            candidate: event.candidate
-          };
-          this.websocket.send(JSON.stringify(iceCandidateMessage));
-          console.log('[XIAOZHI-CLIENT] 已发送ICE候选者到信令服务器');
+        // 关键修复：使用SignalingClient发送ICE候选者
+        if (this.signalingClient && this.signalingClient.isConnected()) {
+          // 使用SignalingClient的sendIceCandidate方法发送候选者
+          const success = this.signalingClient.sendIceCandidate(event.candidate);
+          if (success) {
+            console.log('[XIAOZHI-CLIENT] 已成功发送ICE候选者到信令服务器');
+          } else {
+            console.error('[XIAOZHI-CLIENT] 发送ICE候选者失败');
+          }
         } else {
-          console.error('[XIAOZHI-CLIENT] WebSocket未连接，无法发送ICE候选者');
+          console.error('[XIAOZHI-CLIENT] SignalingClient未连接或未设置，无法发送ICE候选者');
         }
       }
     };
@@ -414,15 +423,15 @@ export class MediaManager {
       console.log('[XIAOZHI-CLIENT] 本地SDP设置完成');
 
       // 发送offer到信令服务器
-      if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-        const offerMessage = {
-          type: 'offer',
-          sdp: offer.sdp
-        };
-        this.websocket.send(JSON.stringify(offerMessage));
-        console.log('[XIAOZHI-CLIENT] 已发送SDP offer到信令服务器');
+      if (this.signalingClient && this.signalingClient.isConnected()) {
+        const success = this.signalingClient.sendOffer(offer);
+        if (success) {
+          console.log('[XIAOZHI-CLIENT] 已成功发送SDP offer到信令服务器');
+        } else {
+          console.error('[XIAOZHI-CLIENT] 发送SDP offer失败');
+        }
       } else {
-        console.error('[XIAOZHI-CLIENT] WebSocket未连接，无法发送offer');
+        console.error('[XIAOZHI-CLIENT] SignalingClient未连接或未设置，无法发送offer');
       }
     } catch (error) {
       console.error('[XIAOZHI-CLIENT] 创建WebRTC offer时出错:', error);
@@ -430,57 +439,28 @@ export class MediaManager {
   }
 
   /**
-   * 连接到WebSocket信令服务器
-   * @param url WebSocket服务器URL
+   * 设置信令消息处理
+   * 这个方法设置事件监听器，以响应来自信令服务器的WebRTC相关消息
    */
-  public async connectToSignalingServer(url: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        this.websocket = new WebSocket(url);
-        
-        this.websocket.onopen = () => {
-          console.log('[XIAOZHI-CLIENT] WebSocket连接已建立');
-          resolve();
-        };
-        
-        this.websocket.onerror = (error) => {
-          console.error('[XIAOZHI-CLIENT] WebSocket连接错误:', error);
-          reject(error);
-        };
-        
-        this.websocket.onclose = () => {
-          console.log('[XIAOZHI-CLIENT] WebSocket连接已关闭');
-          this.webrtcConnected = false;
-        };
-        
-        this.websocket.onmessage = this.handleSignalingMessage.bind(this);
-      } catch (error) {
-        console.error('[XIAOZHI-CLIENT] 连接到信令服务器时出错:', error);
-        reject(error);
-      }
-    });
-  }
+  private setupSignalingEvents(): void {
+    if (!this.signalingClient || !this.eventEmitter) return;
 
-  /**
-   * 处理来自信令服务器的消息
-   */
-  private handleSignalingMessage(event: MessageEvent): void {
-    try {
-      const message = JSON.parse(event.data);
-      console.log('[XIAOZHI-CLIENT] 收到信令消息:', message.type);
-      
-      // 处理不同类型的信令消息
-      if (message.type === 'ice-candidate' && this.peerConnection) {
-        // 添加ICE候选者
-        this.peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate))
-          .catch(error => console.error('[XIAOZHI-CLIENT] 添加ICE候选者失败:', error));
-      } else if (message.type === 'answer' && this.peerConnection) {
-        // 设置远程描述（answer）
-        this.peerConnection.setRemoteDescription(new RTCSessionDescription(message))
+    // 监听来自信令服务器的answer
+    this.eventEmitter.on('answer', (payload: RTCSessionDescriptionInit) => {
+      if (this.peerConnection) {
+        console.log('[XIAOZHI-CLIENT] 收到SDP answer，设置远程描述');
+        this.peerConnection.setRemoteDescription(new RTCSessionDescription(payload))
           .catch(error => console.error('[XIAOZHI-CLIENT] 设置远程描述失败:', error));
       }
-    } catch (error) {
-      console.error('[XIAOZHI-CLIENT] 处理信令消息时出错:', error);
-    }
+    });
+
+    // 监听来自信令服务器的ICE候选者
+    this.eventEmitter.on('ice-candidate', (payload: RTCIceCandidateInit) => {
+      if (this.peerConnection) {
+        console.log('[XIAOZHI-CLIENT] 收到ICE候选者，添加到连接');
+        this.peerConnection.addIceCandidate(new RTCIceCandidate(payload))
+          .catch(error => console.error('[XIAOZHI-CLIENT] 添加ICE候选者失败:', error));
+      }
+    });
   }
 }
