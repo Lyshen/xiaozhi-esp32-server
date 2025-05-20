@@ -68,11 +68,16 @@ class SignalingHandler:
         # 尝试关联WebSocket到WebRTCConnection
         # 这是关键改动 - 将信令WebSocket与WebRTC连接关联
         if hasattr(self.connection_manager, 'associate_websocket'):
-            success = self.connection_manager.associate_websocket(client_id, ws)
-            if success:
-                logger.info(f"[SIGNALING] 成功将WebSocket关联到WebRTC连接 [ID: {client_id}]")
-            else:
-                logger.warning(f"[SIGNALING] WebRTC连接对象尚不存在，将在需要时创建 [ID: {client_id}]")
+            try:
+                success = await self.connection_manager.associate_websocket(client_id, ws)
+                if success:
+                    logger.info(f"[SIGNALING] 成功将WebSocket关联到WebRTC连接 [ID: {client_id}]")
+                else:
+                    logger.warning(f"[SIGNALING] WebRTC连接对象尚不存在，将在需要时创建 [ID: {client_id}]")
+            except Exception as e:
+                logger.error(f"[SIGNALING] 关联WebSocket时出错: {e}")
+                import traceback
+                logger.error(f"[SIGNALING] 异常堆栈: {traceback.format_exc()}")
         else:
             logger.error(f"[SIGNALING] ConnectionManager缺少associate_websocket方法！")
         
@@ -144,7 +149,9 @@ class SignalingHandler:
                 await self.connection_manager.close_connection(client_id)
                 await ws.send_json({"type": "closed"})
             elif normalized_type == 'ping':
-                await ws.send_json({"type": "pong", "timestamp": message.get("timestamp", 0)})
+                # 立即响应ping消息以保持心跳
+                logger.debug(f"收到ping消息 [客户端: {client_id}], 立即响应pong")
+                await ws.send_json({"type": "pong", "timestamp": message.get("timestamp", int(time.time()))})
             else:
                 logger.warning(f"未知的信令消息类型 [客户端: {client_id}]: {normalized_type}")
                 await ws.send_json({"type": "error", "message": f"未支持的消息类型: {normalized_type}"})

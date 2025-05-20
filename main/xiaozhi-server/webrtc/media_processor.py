@@ -282,7 +282,7 @@ class AudioProcessor:
         try:
             # 输出谁试信息 - 正确访问AV音频格式属性
             # PyAV中是通过layout访问通道信息
-            logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
+            #logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
             
             # 尝试获取WebRTC连接管理器
             connection_manager = None
@@ -290,7 +290,7 @@ class AudioProcessor:
             # 方式1: 直接从 app_context 获取
             if self.app_context and hasattr(self.app_context, 'webrtc_manager'):
                 connection_manager = self.app_context.webrtc_manager
-                logger.info(f"[XIAOZHI-SERVER] 从 app_context.webrtc_manager 获取到WebRTC连接管理器")
+                #logger.info(f"[XIAOZHI-SERVER] 从 app_context.webrtc_manager 获取到WebRTC连接管理器")
             
             # 方式2: 通过 webrtc_module 获取
             elif self.app_context and hasattr(self.app_context, 'webrtc_module'):
@@ -298,11 +298,11 @@ class AudioProcessor:
                 # 检查是否直接有connection_manager属性
                 if hasattr(webrtc_module, 'connection_manager'):
                     connection_manager = webrtc_module.connection_manager
-                    logger.info(f"[XIAOZHI-SERVER] 从 webrtc_module.connection_manager 获取到WebRTC连接管理器")
+                    #logger.info(f"[XIAOZHI-SERVER] 从 webrtc_module.connection_manager 获取到WebRTC连接管理器")
                 # 检查是否有get_connection_manager方法
                 elif hasattr(webrtc_module, 'get_connection_manager'):
                     connection_manager = webrtc_module.get_connection_manager()
-                    logger.info(f"[XIAOZHI-SERVER] 通过 webrtc_module.get_connection_manager() 获取到WebRTC连接管理器")
+                    #logger.info(f"[XIAOZHI-SERVER] 通过 webrtc_module.get_connection_manager() 获取到WebRTC连接管理器")
             
             # 方式3: 尝试从全局模块导入
             if not connection_manager:
@@ -315,7 +315,7 @@ class AudioProcessor:
                         for module_name, module in sys.modules.items():
                             if hasattr(module, 'connection_manager') and isinstance(module.connection_manager, ConnectionManager):
                                 connection_manager = module.connection_manager
-                                logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
+                                #logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
                                 break
                     except ImportError:
                         from webrtc.connection_manager import ConnectionManager
@@ -323,7 +323,7 @@ class AudioProcessor:
                         for module_name, module in sys.modules.items():
                             if hasattr(module, 'connection_manager') and isinstance(module.connection_manager, ConnectionManager):
                                 connection_manager = module.connection_manager
-                                logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
+                                #logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
                                 break
                 except Exception as e:
                     logger.warning(f"[XIAOZHI-SERVER] 无法导入ConnectionManager: {str(e)}")

@@ -57,15 +57,15 @@ class VADHelper:
             self._ensure_vad_loaded()
             
             # 记录音频信息
-            logger.info(f"[VAD-DEBUG] VAD检测音频，长度: {len(audio)} 字节")
+            #logger.info(f"[VAD-DEBUG] VAD检测音频，长度: {len(audio)} 字节")
             
             # 检查音频数据完整性
             if len(audio) == 0:
-                logger.warning("[VAD-DEBUG] 音频数据为空")
+                #logger.warning("[VAD-DEBUG] 音频数据为空")
                 return False
                 
             # 检查音频数据头部
-            logger.info(f"[VAD-DEBUG] 音频数据头部: {audio[:20]}")
+            #logger.info(f"[VAD-DEBUG] 音频数据头部: {audio[:20]}")
             
             # 检查音频是否是Opus格式
             is_opus = False
@@ -73,7 +73,7 @@ class VADHelper:
                 # Opus帧通常以'OggS'或特定魔术字节开头
                 if audio.startswith(b'OggS') or audio.startswith(b'OpusHead'):
                     is_opus = True
-                    logger.info("[VAD-DEBUG] 疑似检测到Opus编码数据")
+                    #logger.info("[VAD-DEBUG] 疑似检测到Opus编码数据")
             except Exception as check_err:
                 logger.warning(f"[VAD-DEBUG] 检查音频格式失败: {check_err}")
             
@@ -88,18 +88,18 @@ class VADHelper:
                 logger.warning(f"[VAD-DEBUG] 无法获取连接音频配置: {conn_err}")
             
             # 调用VAD判断是否有语音
-            logger.warning(f"[VAD-DEBUG] 开始调用VAD识别")
+            #logger.warning(f"[VAD-DEBUG] 开始调用VAD识别")
             is_speech, prob = self.process(audio)
-            logger.warning(f"[VAD-DEBUG] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
+            #logger.warning(f"[VAD-DEBUG] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
             
             # 更新连接状态
             if is_speech:
                 conn.client_have_voice = True
                 conn.vad_speech_count = conn.vad_speech_count + 1 if hasattr(conn, 'vad_speech_count') else 1
-                logger.info(f"[VAD-DEBUG] 已设置client_have_voice=True, 连续语音帧计数: {getattr(conn, 'vad_speech_count', 1)}")
+                #logger.info(f"[VAD-DEBUG] 已设置client_have_voice=True, 连续语音帧计数: {getattr(conn, 'vad_speech_count', 1)}")
             else:
                 conn.vad_silence_count = conn.vad_silence_count + 1 if hasattr(conn, 'vad_silence_count') else 1
-                logger.info(f"[VAD-DEBUG] 静音帧计数: {getattr(conn, 'vad_silence_count', 1)}")
+                #logger.info(f"[VAD-DEBUG] 静音帧计数: {getattr(conn, 'vad_silence_count', 1)}")
                 
                 # 如果连续静音超过一定阈值，可能声音结束
                 if getattr(conn, 'vad_silence_count', 0) > 5 and getattr(conn, 'client_have_voice', False):
@@ -108,7 +108,7 @@ class VADHelper:
             
             return is_speech
         except Exception as e:
-            logger.error(f"[VAD-DEBUG] VAD判断出错: {e}")
+            #logger.error(f"[VAD-DEBUG] VAD判断出错: {e}")
             logger.error(f"[VAD-DEBUG] 错误详情: {traceback.format_exc()}")
             return False
     
@@ -126,14 +126,14 @@ class VADHelper:
             self._ensure_vad_loaded()
             
             # 记录音频数据信息
-            logger.info(f"[VAD-DEBUG] 处理音频数据: 长度={len(audio_data)}字节, 前10字节={audio_data[:10]}")
+            #logger.info(f"[VAD-DEBUG] 处理音频数据: 长度={len(audio_data)}字节, 前10字节={audio_data[:10]}")
             
             # 判断是否为Opus格式
             is_opus = False
             try:
                 if audio_data.startswith(b'OggS') or audio_data.startswith(b'OpusHead'):
                     is_opus = True
-                    logger.info("[VAD-DEBUG] 检测到Opus格式数据")
+                    #logger.info("[VAD-DEBUG] 检测到Opus格式数据")
             except:
                 # 如果无法检查前缀，假设不是Opus
                 pass
@@ -145,7 +145,7 @@ class VADHelper:
                     data_array = np.frombuffer(audio_data, dtype=np.int16)
                     mean_val = np.mean(np.abs(data_array))
                     std_val = np.std(data_array)
-                    logger.info(f"[VAD-DEBUG] 音频统计: 平均振幅={mean_val:.2f}, 标准差={std_val:.2f}")
+                    #logger.info(f"[VAD-DEBUG] 音频统计: 平均振幅={mean_val:.2f}, 标准差={std_val:.2f}")
                     
                     # 检查是否为静音
                     if mean_val < 100:  # 阈值可能需要调整
@@ -160,7 +160,7 @@ class VADHelper:
                 
             # VAD处理 - 使用原始接口，不添加额外参数
             is_speech, prob = self.vad.is_speech(audio_data)
-            logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
+            #logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
             return is_speech, prob
         except Exception as e:
             logger.error(f"[VAD-DEBUG] VAD处理错误: {str(e)}")

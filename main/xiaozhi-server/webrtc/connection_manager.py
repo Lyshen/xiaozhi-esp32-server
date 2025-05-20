@@ -138,6 +138,18 @@ class ConnectionManager:
         
         return pc
     
+    def is_websocket_open(self, ws):
+        """
+        检查WebSocket是否处于打开状态
+        
+        Args:
+            ws: WebSocket对象
+            
+        Returns:
+            bool: WebSocket是否打开
+        """
+        return ws is not None and hasattr(ws, 'open') and ws.open
+    
     async def handle_offer(self, client_id, offer_data, websocket=None):
         """
         处理客户端发送的Offer
@@ -212,7 +224,7 @@ class ConnectionManager:
             if websocket:
                 logger.info(f"WebSocket检查 [客户端: {client_id}]: 类型={type(websocket)}, 方法={dir(websocket)[:5]}...")
                 
-                if hasattr(websocket, 'open') and websocket.open:
+                if self.is_websocket_open(websocket):
                     try:
                         logger.info(f"准备通过传入的WebSocket发送Answer [客户端: {client_id}]")
                         await websocket.send(json.dumps(answer_data))
@@ -231,7 +243,7 @@ class ConnectionManager:
                 if conn:
                     logger.info(f"检查WebRTCConnection对象 [客户端: {client_id}]: websocket存在={conn.websocket is not None}")
                     
-                    if conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
+                    if self.is_websocket_open(conn.websocket):
                         try:
                             logger.info(f"准备通过已关联的WebSocket发送Answer [客户端: {client_id}]")
                             await conn.websocket.send(json.dumps(answer_data))
@@ -251,24 +263,28 @@ class ConnectionManager:
                     self.webrtc_connections[client_id] = WebRTCConnection(client_id=client_id)
                     logger.info(f"创建了新的WebRTCConnection [客户端: {client_id}]")
                 
-                # 关键改动: 将WebSocket关联到WebRTCConnection
+                # 获取WebRTCConnection对象
                 conn = self.webrtc_connections[client_id]
                 
-                # 显式设置websocket
-                if websocket:
+                # 关键修复: 只在当前没有有效WebSocket时才设置新的WebSocket
+                if websocket and (not conn.websocket or not self.is_websocket_open(conn.websocket)):
+                    # 保存旧的WebSocket用于日志
+                    old_ws = conn.websocket
                     conn.websocket = websocket
-                    logger.info(f"成功关联WebSocket到WebRTCConnection [客户端: {client_id}]")
+                    logger.info(f"成功关联新的WebSocket到WebRTCConnection [客户端: {client_id}], 替换旧WebSocket: {old_ws is not None}")
                     
+                # 只有在WebSocket有效时才尝试发送
+                if self.is_websocket_open(conn.websocket):
                     # 尝试立即发送answer
                     try:
-                        logger.info(f"直接发送Answer尝试 [客户端: {client_id}], WebSocket类型: {type(websocket)}")
+                        logger.info(f"直接发送Answer尝试 [客户端: {client_id}], WebSocket类型: {type(conn.websocket)}")
                         # 检查WebSocket对象类型和方法
-                        if hasattr(websocket, 'send_json'):
+                        if hasattr(conn.websocket, 'send_json'):
                             logger.info(f"使用send_json方法发送Answer [客户端: {client_id}]")
-                            await websocket.send_json(answer_data)
+                            await conn.websocket.send_json(answer_data)
                         else:
                             logger.info(f"使用send方法发送Answer [客户端: {client_id}]")
-                            await websocket.send(json.dumps(answer_data))
+                            await conn.websocket.send(json.dumps(answer_data))
                         logger.info(f"使用关联的WebSocket直接发送Answer成功 [客户端: {client_id}]")
                         sent_answer = True
                     except Exception as e:
@@ -289,7 +305,13 @@ class ConnectionManager:
                 if not sent_answer:
                     logger.warning(f"无法立即发送Answer，将启动重试进程 [客户端: {client_id}]")
                     logger.info(f"Answer待发送数据: {answer_data['type']}, SDP类型: {answer_data['sdp']['type']}")
-                    asyncio.create_task(self._retry_send_answer(client_id))
+                    
+                    # 检查是否有可用的WebSocket连接用于重试
+                    if self.is_websocket_open(conn.websocket):
+                        logger.info(f"WebSocket连接可用，启动重试任务 [客户端: {client_id}]")
+                        asyncio.create_task(self._retry_send_answer(client_id))
+                    else:
+                        logger.warning(f"没有可用的WebSocket连接用于重试 [客户端: {client_id}]，将等待WebSocket重连")
             
             # 8. 如果有待处理的ICE候选者，添加它们
             if client_id in self.pending_candidates:
@@ -490,7 +512,7 @@ class ConnectionManager:
         ndarray = frame.to_ndarray()
         return ndarray.tobytes()
     
-    def associate_websocket(self, client_id, websocket):
+    async def associate_websocket(self, client_id, websocket):
         """
         关联WebRTC连接和WebSocket连接
         
@@ -501,39 +523,51 @@ class ConnectionManager:
         返回:
         bool: 关联是否成功
         """
-        # 如果WebRTCConnection已存在，直接关联
-        if client_id in self.webrtc_connections:
-            conn = self.webrtc_connections[client_id]
-            conn.websocket = websocket
-            logger.info(f"[SERVER-CONNECTION] 已关联WebSocket到现有WebRTC连接 [客户端: {client_id}]")
+        logger.info(f"尝试关联WebSocket [客户端: {client_id}]")
+        
+        # 检查WebSocket是否可用 - 使用统一的检查方法
+        if not self.is_websocket_open(websocket):
+            logger.error(f"无法关联无效的WebSocket [客户端: {client_id}]")
+            return False
             
-            # 如果有待发送的Answer，立即尝试发送
+        try:
+            # 创建或获取WebRTCConnection对象
+            if client_id not in self.webrtc_connections:
+                self.webrtc_connections[client_id] = WebRTCConnection(client_id=client_id)
+                logger.info(f"为WebSocket关联创建了新的WebRTCConnection [客户端: {client_id}]")
+            
+            conn = self.webrtc_connections[client_id]
+            
+            # 关键修复: 只在当前没有有效WebSocket时才设置新的WebSocket
+            if not conn.websocket or not self.is_websocket_open(conn.websocket):
+                # 保存旧的WebSocket用于日志
+                old_ws = conn.websocket
+                conn.websocket = websocket
+                logger.info(f"成功关联WebSocket [客户端: {client_id}], 替换旧WebSocket: {old_ws is not None}")
+            else:
+                logger.info(f"保留现有有效WebSocket [客户端: {client_id}]")
+            
+            # 如果有待发送的Answer，尝试立即发送
             if hasattr(conn, 'pending_answer') and conn.pending_answer:
                 try:
-                    if hasattr(websocket, 'send_json'):
-                        logger.info(f"[SERVER-CONNECTION] 使用send_json发送待发Answer [客户端: {client_id}]")
-                        asyncio.create_task(websocket.send_json(conn.pending_answer))
+                    logger.info(f"尝试发送待处理的Answer [客户端: {client_id}]")
+                    answer_json = json.dumps(conn.pending_answer)
+                    
+                    # 根据WebSocket对象类型选择发送方法
+                    if hasattr(conn.websocket, 'send_json'):
+                        await conn.websocket.send_json(conn.pending_answer)
                     else:
-                        logger.info(f"[SERVER-CONNECTION] 使用send发送待发Answer [客户端: {client_id}]")
-                        asyncio.create_task(websocket.send(json.dumps(conn.pending_answer)))
-                    logger.info(f"[SERVER-CONNECTION] 在关联时发送待发Answer成功 [客户端: {client_id}]")
+                        await conn.websocket.send(answer_json)
+                        
+                    logger.info(f"成功发送待处理的Answer [客户端: {client_id}]")
+                    conn.pending_answer = None  # 清除待处理的Answer
                 except Exception as e:
-                    logger.error(f"[SERVER-CONNECTION] 关联时尝试发送Answer失败: {e}")
-            return True
+                    logger.error(f"发送待处理Answer失败 [客户端: {client_id}]: {e}")
+                    return False
             
-        # 如果WebRTCConnection不存在，则创建一个新的
-        try:
-            # 正确创建对象：先创建WebRTCConnection对象，再设置websocket属性
-            conn = WebRTCConnection(client_id=client_id)
-            conn.websocket = websocket  # 直接设置websocket属性
-            self.webrtc_connections[client_id] = conn
-            
-            logger.info(f"[SERVER-CONNECTION] 创建新的WebRTCConnection并关联WebSocket [客户端: {client_id}]")
             return True
         except Exception as e:
-            logger.error(f"[SERVER-CONNECTION] 创建新的WebRTCConnection失败 [客户端: {client_id}]: {e}")
-            import traceback
-            logger.error(f"[SERVER-CONNECTION] 异常堆栈: {traceback.format_exc()}")
+            logger.error(f"[SERVER-CONNECTION] 关联WebSocket失败: {e}")
             return False
         
     async def process_audio_frame(self, frame, client_id):
@@ -620,12 +654,12 @@ class ConnectionManager:
         while retries < max_retries:
             logger.info(f"[重试机制] 开始第{retries+1}次尝试 [客户端: {client_id}]")
             
-            # 检查WebSocket连接
+            # 检查WebSocket连接 - 使用统一的检查方法
             if conn.websocket:
-                ws_status = "open" if hasattr(conn.websocket, 'open') and conn.websocket.open else "closed"
+                ws_status = "open" if self.is_websocket_open(conn.websocket) else "closed"
                 logger.info(f"[重试机制] WebSocket状态 [客户端: {client_id}, 状态: {ws_status}, 类型: {type(conn.websocket)}]")
                 
-                if hasattr(conn.websocket, 'open') and conn.websocket.open:
+                if self.is_websocket_open(conn.websocket):
                     try:
                         # 尝试发送Answer的不同方法
                         answer_json = json.dumps(conn.pending_answer)
@@ -647,6 +681,12 @@ class ConnectionManager:
                         logger.error(f"[重试机制] 重试发送Answer失败 [客户端: {client_id}, 尝试次数: {retries+1}]: {e}")
                         import traceback
                         logger.error(f"[重试机制] 异常堆栈: {traceback.format_exc()}")
+                        
+                        # 检查异常是否表明WebSocket已关闭
+                        if "closed" in str(e).lower() or "not open" in str(e).lower():
+                            logger.warning(f"[重试机制] WebSocket已关闭，标记为无效 [客户端: {client_id}]")
+                            # 将WebSocket标记为无效，以便下次不再尝试使用
+                            conn.websocket = None
             else:
                 logger.error(f"[重试机制] WebSocket对象不存在 [客户端: {client_id}, 尝试次数: {retries+1}]")
             
