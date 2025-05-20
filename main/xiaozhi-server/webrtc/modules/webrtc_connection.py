@@ -82,6 +82,7 @@ class WebRTCConnection:
         self.recode_first_last_text = self.record_text_index
         
         # 创建VAD和ASR对象
+        # VADHelper不需要传入logger参数
         self.vad = VADHelper()
         self.asr = ASRHelper()
     
