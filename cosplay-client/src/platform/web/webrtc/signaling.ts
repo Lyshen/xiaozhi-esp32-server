@@ -2,8 +2,11 @@ import { EventEmitter } from 'events';
 import { SignalingMessage, SignalingMessageType, WebRTCEvent } from '../../../types/webrtc';
 
 // 心跳配置
-const HEARTBEAT_INTERVAL = 30000; // 30秒
-const HEARTBEAT_TIMEOUT = 10000;  // 10秒
+const HEARTBEAT_INTERVAL = 15000; // 15秒
+const HEARTBEAT_TIMEOUT = 8000;   // 8秒
+const MAX_RECONNECT_ATTEMPTS = 10; // 最大重连次数
+const INITIAL_RECONNECT_DELAY = 1000; // 初始重连延迟（毫秒）
+const LOG_HEARTBEAT_FREQUENCY = 10; // 每10次心跳打印一次日志
 
 /**
  * WebRTC信令客户端
@@ -14,12 +17,16 @@ export class SignalingClient {
   private webSocket: WebSocket | null = null;
   private eventEmitter: EventEmitter;
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 8; // 增加最大重试次数
-  private reconnectTimeout: number = 2000;
+  private maxReconnectAttempts: number = MAX_RECONNECT_ATTEMPTS;
+  private reconnectTimeout: number = INITIAL_RECONNECT_DELAY;
   private connected: boolean = false;
   private heartbeatTimer: number | null = null;
   private heartbeatTimeoutTimer: number | null = null;
   private lastPongTime: number = 0;
+  private heartbeatCount: number = 0;
+  private messagesSent: number = 0;
+  private messagesReceived: number = 0;
+  private instanceId: string = Math.random().toString(36).substring(2, 9);
 
   /**
    * 构造函数
@@ -35,7 +42,7 @@ export class SignalingClient {
     } else {
       this.url = `${this.url}&client_id=${this.generateClientId()}`;
     }
-    console.log(`SignalingClient: URL配置为 ${this.url}`);
+    console.log(`SignalingClient[${this.instanceId}]: 初始化，URL配置为 ${this.url}`);
   }
 
   /**
@@ -57,13 +64,13 @@ export class SignalingClient {
         this.cleanupExistingConnection();
         
         // 创建WebSocket连接
-        console.log(`SignalingClient: 正在尝试连接到信令服务器 URL: ${this.url}`);
+        console.log(`SignalingClient[${this.instanceId}]: 正在尝试连接到信令服务器 URL: ${this.url}`);
         this.webSocket = new WebSocket(this.url);
 
         // 设置超时处理
         const connectionTimeout = setTimeout(() => {
           if (!this.connected && this.webSocket) {
-            console.error('SignalingClient: 连接超时');
+            console.error(`SignalingClient[${this.instanceId}]: 连接超时`);
             this.webSocket.close();
             reject(new Error('Connection timeout'));
           }
@@ -71,9 +78,12 @@ export class SignalingClient {
 
         // 连接建立时
         this.webSocket.onopen = () => {
-          console.log('SignalingClient: Connected to signaling server');
+          console.log(`SignalingClient[${this.instanceId}]: 已连接到信令服务器，WebSocket状态: ${this.webSocket?.readyState}`);
           this.connected = true;
           this.reconnectAttempts = 0;
+          this.messagesSent = 0;
+          this.messagesReceived = 0;
+          this.heartbeatCount = 0;
           clearTimeout(connectionTimeout);
           
           // 开始心跳
@@ -89,22 +99,29 @@ export class SignalingClient {
         this.webSocket.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data);
+            this.messagesReceived++;
+            
+            // 每接收10条消息或收到非心跳消息时记录日志
+            if (this.messagesReceived % 10 === 0 || message.type !== SignalingMessageType.PONG) {
+              console.log(`SignalingClient[${this.instanceId}]: 已接收消息 #${this.messagesReceived}, 类型: ${message.type}`);
+            }
+            
             this.handleMessage(message);
           } catch (error) {
-            console.error('SignalingClient: Error parsing message:', error);
+            console.error(`SignalingClient[${this.instanceId}]: 解析消息错误:`, error);
           }
         };
 
         // 连接关闭时
         this.webSocket.onclose = (event) => {
           this.connected = false;
-          console.log(`SignalingClient: Connection closed (${event.code}): ${event.reason}`);
+          console.log(`SignalingClient[${this.instanceId}]: 连接已关闭 (代码: ${event.code}): ${event.reason}, 已发送消息: ${this.messagesSent}, 已接收消息: ${this.messagesReceived}`);
           this.handleReconnect();
         };
 
         // 连接错误时
         this.webSocket.onerror = (error) => {
-          console.error('SignalingClient: Connection error:', error);
+          console.error(`SignalingClient[${this.instanceId}]: 连接错误:`, error);
           reject(error);
         };
       } catch (error) {
@@ -120,9 +137,22 @@ export class SignalingClient {
    */
   private handleMessage(message: any): void {
     if (!message || !message.type) {
-      console.warn('SignalingClient: Received invalid message format');
+      console.warn(`SignalingClient[${this.instanceId}]: 收到无效消息格式`);
       return;
     }
+
+    // 如果是PONG消息，更新最后接收PONG的时间
+    if (message.type === SignalingMessageType.PONG) {
+      this.lastPongTime = Date.now();
+      // 每10次心跳响应记录一次日志
+      if (this.heartbeatCount % LOG_HEARTBEAT_FREQUENCY === 0) {
+        console.log(`SignalingClient[${this.instanceId}]: 收到PONG响应 #${this.heartbeatCount}, WebSocket状态: ${this.webSocket?.readyState}`);
+      }
+      return;
+    }
+
+    // 对于非心跳消息，记录详细日志
+    console.log(`SignalingClient[${this.instanceId}]: 处理消息类型: ${message.type}`);
 
     switch (message.type) {
       case SignalingMessageType.OFFER:
@@ -166,17 +196,23 @@ export class SignalingClient {
    */
   public send(message: SignalingMessage): boolean {
     if (!this.connected || !this.webSocket) {
-      console.error('SignalingClient: Cannot send message, not connected');
-      console.error(`SignalingClient: Connection URL: ${this.url}, Connected status: ${this.connected}`);
+      console.error(`SignalingClient[${this.instanceId}]: 无法发送消息，未连接`);
+      console.error(`SignalingClient[${this.instanceId}]: 连接URL: ${this.url}, 连接状态: ${this.connected}, WebSocket存在: ${this.webSocket !== null}`);
       return false;
     }
 
     try {
-      console.log(`SignalingClient: Sending message to ${this.url} (WebSocket readyState: ${this.webSocket.readyState})`);
+      this.messagesSent++;
+      
+      // 仅对非心跳消息或每10条消息记录日志
+      if (message.type !== SignalingMessageType.PING || this.messagesSent % 10 === 0) {
+        console.log(`SignalingClient[${this.instanceId}]: 发送消息 #${this.messagesSent}, 类型: ${message.type}, WebSocket状态: ${this.webSocket.readyState}`);
+      }
+      
       this.webSocket.send(JSON.stringify(message));
       return true;
     } catch (error) {
-      console.error('SignalingClient: Error sending message:', error);
+      console.error(`SignalingClient[${this.instanceId}]: 发送消息错误:`, error);
       return false;
     }
   }
@@ -222,18 +258,19 @@ export class SignalingClient {
    */
   private handleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error(`SignalingClient: Max reconnect attempts (${this.maxReconnectAttempts}) reached`);
+      console.error(`SignalingClient[${this.instanceId}]: 达到最大重连尝试次数 (${this.maxReconnectAttempts})`);
       this.eventEmitter.emit(WebRTCEvent.ERROR, new Error('Max reconnect attempts reached'));
       return;
     }
 
     this.reconnectAttempts++;
     const timeout = this.reconnectTimeout * Math.pow(1.5, this.reconnectAttempts - 1);
-    console.log(`SignalingClient: Reconnecting in ${timeout}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(`SignalingClient[${this.instanceId}]: 将在 ${timeout}ms 后重连 (尝试 ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     setTimeout(() => {
+      console.log(`SignalingClient[${this.instanceId}]: 开始第 ${this.reconnectAttempts} 次重连尝试`);
       this.connect().catch(error => {
-        console.error('SignalingClient: Reconnect failed:', error);
+        console.error(`SignalingClient[${this.instanceId}]: 重连失败:`, error);
       });
     }, timeout);
   }
@@ -273,17 +310,26 @@ export class SignalingClient {
     // 设置新的心跳计时器
     this.heartbeatTimer = window.setInterval(() => {
       if (this.connected && this.webSocket?.readyState === WebSocket.OPEN) {
+        this.heartbeatCount++;
+        
+        // 每LOG_HEARTBEAT_FREQUENCY次心跳记录一次日志
+        if (this.heartbeatCount % LOG_HEARTBEAT_FREQUENCY === 0) {
+          console.log(`SignalingClient[${this.instanceId}]: 发送心跳 #${this.heartbeatCount}, WebSocket状态: ${this.webSocket.readyState}, 已发送消息: ${this.messagesSent}, 已接收消息: ${this.messagesReceived}`);
+        }
+        
         // 发送ping消息
         this.send({
           type: SignalingMessageType.PING,
-          payload: { timestamp: Date.now() }
+          payload: { timestamp: Date.now(), count: this.heartbeatCount }
         });
         
         // 设置超时监测，如果在一定时间内没有收到pong，则认为连接已断开
         this.heartbeatTimeoutTimer = window.setTimeout(() => {
-          console.warn('SignalingClient: 心跳超时，认为连接已断开');
+          console.warn(`SignalingClient[${this.instanceId}]: 心跳 #${this.heartbeatCount} 超时，认为连接已断开`);
           this.handleConnectionLost('心跳超时');
         }, HEARTBEAT_TIMEOUT);
+      } else {
+        console.warn(`SignalingClient[${this.instanceId}]: 无法发送心跳，连接状态: ${this.connected}, WebSocket状态: ${this.webSocket?.readyState}`);
       }
     }, HEARTBEAT_INTERVAL);
   }
@@ -307,7 +353,7 @@ export class SignalingClient {
    * 处理连接丢失
    */
   private handleConnectionLost(reason: string): void {
-    console.error(`SignalingClient: 连接丢失 (${reason})`);
+    console.error(`SignalingClient[${this.instanceId}]: 连接丢失 (${reason}), 已发送消息: ${this.messagesSent}, 已接收消息: ${this.messagesReceived}, 心跳计数: ${this.heartbeatCount}`);
     this.connected = false;
     this.stopHeartbeat();
     this.cleanupExistingConnection();
@@ -335,6 +381,11 @@ export class SignalingClient {
    * @returns 是否已连接
    */
   public isConnected(): boolean {
-    return this.connected;
+    const wsState = this.webSocket ? this.webSocket.readyState : 'null';
+    // 每10次心跳检查一次连接状态并记录日志
+    if (this.heartbeatCount % LOG_HEARTBEAT_FREQUENCY === 0) {
+      console.log(`SignalingClient[${this.instanceId}]: 连接状态检查 - connected: ${this.connected}, WebSocket状态: ${wsState}, 心跳计数: ${this.heartbeatCount}`);
+    }
+    return this.connected && this.webSocket?.readyState === WebSocket.OPEN;
   }
 }

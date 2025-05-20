@@ -46,11 +46,15 @@ export class WebRTCAudioConnection {
    */
   public async initialize(): Promise<boolean> {
     try {
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 开始初始化WebRTC连接`);
+      
       // 创建RTCPeerConnection
       this.peerConnection = new RTCPeerConnection({
         iceServers: this.config.iceServers,
         iceTransportPolicy: this.config.iceTransportPolicy || 'all'
       });
+      
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: RTCPeerConnection已创建, ICE服务器数量: ${this.config.iceServers.length}`);
 
       // 设置连接事件监听
       this.setupPeerConnectionListeners();
@@ -99,13 +103,15 @@ export class WebRTCAudioConnection {
       });
 
       // 连接到信令服务器
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 正在连接到信令服务器: ${this.config.signalingUrl}`);
       await this.signalingClient.connect();
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 已成功连接到信令服务器`);
 
-      console.log('WebRTCAudioConnection: Initialized successfully');
-      this.setState(WebRTCConnectionState.NEW);
+      this.setState(WebRTCConnectionState.CONNECTING);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 初始化完成，状态为 ${WebRTCConnectionState.CONNECTING}`);
       return true;
     } catch (error) {
-      console.error('WebRTCAudioConnection: Initialization failed:', error);
+      console.error(`WebRTCAudioConnection[${this.instanceId}]: 初始化错误:`, error);
       this.setState(WebRTCConnectionState.FAILED);
       this.eventEmitter.emit(WebRTCEvent.ERROR, error);
       return false;
@@ -117,11 +123,13 @@ export class WebRTCAudioConnection {
    */
   private setupPeerConnectionListeners(): void {
     if (!this.peerConnection) return;
+    
+    console.log(`WebRTCAudioConnection[${this.instanceId}]: 设置对等连接事件监听器`);
 
     // ICE候选收集事件
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('WebRTCAudioConnection: ICE candidate generated');
+        console.log(`WebRTCAudioConnection[${this.instanceId}]: 收集到ICE候选，发送到信令服务器`);
         this.signalingClient.sendIceCandidate(event.candidate);
       }
     };
@@ -130,65 +138,63 @@ export class WebRTCAudioConnection {
     this.peerConnection.oniceconnectionstatechange = () => {
       if (!this.peerConnection) return;
       
-      console.log('WebRTCAudioConnection: ICE connection state:', this.peerConnection.iceConnectionState);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: ICE连接状态变化为 ${this.peerConnection.iceConnectionState}`);
       
       switch (this.peerConnection.iceConnectionState) {
         case 'connected':
         case 'completed':
-          this.setState(WebRTCConnectionState.CONNECTED);
-          this.eventEmitter.emit(WebRTCEvent.CONNECTED);
+          if (this.state !== WebRTCConnectionState.CONNECTED) {
+            this.setState(WebRTCConnectionState.CONNECTED);
+            this.eventEmitter.emit(WebRTCEvent.CONNECTED);
+            console.log(`WebRTCAudioConnection[${this.instanceId}]: WebRTC连接已建立，状态为 ${WebRTCConnectionState.CONNECTED}`);
+          }
           break;
-        
-        case 'disconnected':
-          this.setState(WebRTCConnectionState.DISCONNECTED);
-          this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
-          break;
-        
         case 'failed':
-          this.setState(WebRTCConnectionState.FAILED);
-          this.eventEmitter.emit(WebRTCEvent.ERROR, new Error('ICE connection failed'));
+          console.error(`WebRTCAudioConnection[${this.instanceId}]: ICE连接失败`);
+          if (this.state !== WebRTCConnectionState.FAILED) {
+            this.setState(WebRTCConnectionState.FAILED);
+            this.eventEmitter.emit(WebRTCEvent.ERROR, new Error('ICE connection failed'));
+          }
           break;
-        
+        case 'disconnected':
+          console.warn(`WebRTCAudioConnection[${this.instanceId}]: ICE连接断开，可能是暂时的网络问题`);
+          if (this.state !== WebRTCConnectionState.DISCONNECTED) {
+            this.setState(WebRTCConnectionState.DISCONNECTED);
+            this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
+          }
+          break;
         case 'closed':
+          console.log(`WebRTCAudioConnection[${this.instanceId}]: ICE连接已关闭`);
           this.setState(WebRTCConnectionState.CLOSED);
           this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
           break;
       }
     };
 
-    // 连接状态变化事件
-    this.peerConnection.onconnectionstatechange = () => {
-      if (!this.peerConnection) return;
-      
-      console.log('WebRTCAudioConnection: Connection state:', this.peerConnection.connectionState);
-      
-      switch (this.peerConnection.connectionState) {
-        case 'connected':
-          this.setState(WebRTCConnectionState.CONNECTED);
-          break;
-        
-        case 'disconnected':
-        case 'closed':
-          this.setState(WebRTCConnectionState.DISCONNECTED);
-          break;
-        
-        case 'failed':
-          this.setState(WebRTCConnectionState.FAILED);
-          break;
-      }
-    };
-
     // 接收轨道事件
     this.peerConnection.ontrack = (event) => {
-      console.log('WebRTCAudioConnection: Remote track received:', event.track.kind);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 收到远程${event.track.kind}轨道, id: ${event.track.id}`);
       
       if (event.track.kind === 'audio') {
         // 创建包含远程音频轨道的媒体流
         const stream = new MediaStream([event.track]);
-        console.log('WebRTCAudioConnection: Remote audio stream created');
+        console.log(`WebRTCAudioConnection[${this.instanceId}]: 已创建远程音频流`);
         
         // 触发音频接收事件
         this.eventEmitter.emit(WebRTCEvent.AUDIO_RECEIVED, stream);
+        
+        // 监听轨道状态变化
+        event.track.onmute = () => {
+          console.log(`WebRTCAudioConnection[${this.instanceId}]: 远程音频轨道已静音`);
+        };
+        
+        event.track.onunmute = () => {
+          console.log(`WebRTCAudioConnection[${this.instanceId}]: 远程音频轨道已取消静音`);
+        };
+        
+        event.track.onended = () => {
+          console.log(`WebRTCAudioConnection[${this.instanceId}]: 远程音频轨道已结束`);
+        };
       }
     };
   }
@@ -199,13 +205,14 @@ export class WebRTCAudioConnection {
    */
   public async createOffer(): Promise<boolean> {
     if (!this.peerConnection) {
-      console.error('WebRTCAudioConnection: Cannot create offer without peer connection');
+      console.error(`WebRTCAudioConnection[${this.instanceId}]: 无法创建offer，对等连接未初始化`);
       return false;
     }
 
     try {
+      // 设置为发起方
       this.isInitiator = true;
-      this.setState(WebRTCConnectionState.CONNECTING);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 开始创建Offer`);
       
       // 创建offer
       const offer = await this.peerConnection.createOffer({
@@ -213,19 +220,23 @@ export class WebRTCAudioConnection {
         offerToReceiveVideo: false
       });
       
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: Offer创建成功，设置本地描述`);
+      
       // 设置本地描述
       await this.setLocalDescription(offer);
-      console.log('WebRTCAudioConnection: Local description (offer) set');
       
       // 发送offer
-      this.signalingClient.sendOffer(offer);
-      console.log('WebRTCAudioConnection: Offer sent');
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 发送Offer到信令服务器`);
+      const sent = this.signalingClient.sendOffer(offer);
+      if (!sent) {
+        console.error(`WebRTCAudioConnection[${this.instanceId}]: 发送Offer失败`);
+        return false;
+      }
       
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: Offer发送成功`);
       return true;
     } catch (error) {
-      console.error('WebRTCAudioConnection: Error creating offer:', error);
-      this.setState(WebRTCConnectionState.FAILED);
-      this.eventEmitter.emit(WebRTCEvent.ERROR, error);
+      console.error(`WebRTCAudioConnection[${this.instanceId}]: 创建Offer错误:`, error);
       return false;
     }
   }
@@ -346,8 +357,9 @@ export class WebRTCAudioConnection {
    */
   private setState(state: WebRTCConnectionState): void {
     if (this.state !== state) {
+      const prevState = this.state;
       this.state = state;
-      console.log('WebRTCAudioConnection: State changed to', state);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 状态从 ${prevState} 变为 ${state}`);
     }
   }
 
@@ -456,7 +468,7 @@ export class WebRTCAudioConnection {
    * 断开连接并清理资源
    */
   public disconnect(): void {
-    console.log(`[DEBUG] WebRTCAudioConnection.disconnect called, instance ID: ${this.instanceId}`);
+    console.log(`WebRTCAudioConnection[${this.instanceId}]: 正在断开连接并清理资源`);
     
     // 关闭媒体管理器
     this.mediaManager.dispose();
@@ -468,10 +480,11 @@ export class WebRTCAudioConnection {
     if (this.peerConnection) {
       this.peerConnection.close();
       this.peerConnection = null;
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 对等连接已关闭`);
     }
     
     this.setState(WebRTCConnectionState.CLOSED);
-    console.log(`[DEBUG] WebRTCAudioConnection: Disconnected and resources cleaned up, instance ID: ${this.instanceId}`);
+    console.log(`WebRTCAudioConnection[${this.instanceId}]: 所有资源已清理完毕`);
   }
   
   /**
