@@ -184,8 +184,15 @@ export class SignalingClient {
         }
         break;
 
+      case SignalingMessageType.CONNECTED:
+        // 处理服务器确认连接的消息
+        console.log(`SignalingClient[${this.instanceId}]: 服务器确认连接已建立`);
+        // 可以触发一个连接确认事件
+        this.eventEmitter.emit(WebRTCEvent.SIGNALING_CONNECTED, message.payload);
+        break;
+        
       default:
-        console.warn('SignalingClient: Unknown message type:', message.type);
+        console.warn(`SignalingClient[${this.instanceId}]: 未知消息类型:`, message.type);
     }
   }
 

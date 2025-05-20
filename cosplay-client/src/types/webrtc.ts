@@ -65,6 +65,7 @@ export enum SignalingMessageType {
   ICE_CANDIDATE = 'ice-candidate',
   PING = 'ping',
   PONG = 'pong',
+  CONNECTED = 'connected',
 }
 
 /**
