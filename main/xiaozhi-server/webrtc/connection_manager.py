@@ -203,27 +203,46 @@ class ConnectionManager:
                 "client_id": client_id
             }
             
+            logger.info(f"准备发送Answer [客户端: {client_id}]")
+            logger.debug(f"Answer SDP内容 [客户端: {client_id}]: {pc.localDescription.sdp[:100]}...")
+            
             sent_answer = False
             
             # 尝试方法1: 使用提供的websocket
-            if websocket and hasattr(websocket, 'open') and websocket.open:
-                try:
-                    await websocket.send(json.dumps(answer_data))
-                    logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
-                    sent_answer = True
-                except Exception as e:
-                    logger.error(f"使用传入的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+            if websocket:
+                logger.info(f"WebSocket检查 [客户端: {client_id}]: 类型={type(websocket)}, 方法={dir(websocket)[:5]}...")
+                
+                if hasattr(websocket, 'open') and websocket.open:
+                    try:
+                        logger.info(f"准备通过传入的WebSocket发送Answer [客户端: {client_id}]")
+                        await websocket.send(json.dumps(answer_data))
+                        logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
+                        sent_answer = True
+                    except Exception as e:
+                        logger.error(f"使用传入的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+                        import traceback
+                        logger.error(f"发送Answer异常堆栈: {traceback.format_exc()}")
+                else:
+                    logger.error(f"传入的WebSocket不可用 [客户端: {client_id}], 属性open: {hasattr(websocket, 'open')}, 状态: {getattr(websocket, 'open', None)}")
             
             # 尝试方法2: 使用已关联的WebRTCConnection中的websocket
             if not sent_answer and client_id in self.webrtc_connections:
                 conn = self.webrtc_connections.get(client_id)
-                if conn and conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
-                    try:
-                        await conn.websocket.send(json.dumps(answer_data))
-                        logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
-                        sent_answer = True
-                    except Exception as e:
-                        logger.error(f"使用关联的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+                if conn:
+                    logger.info(f"检查WebRTCConnection对象 [客户端: {client_id}]: websocket存在={conn.websocket is not None}")
+                    
+                    if conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
+                        try:
+                            logger.info(f"准备通过已关联的WebSocket发送Answer [客户端: {client_id}]")
+                            await conn.websocket.send(json.dumps(answer_data))
+                            logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
+                            sent_answer = True
+                        except Exception as e:
+                            logger.error(f"使用关联的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+                            import traceback
+                            logger.error(f"发送Answer异常堆栈: {traceback.format_exc()}")
+                    else:
+                        logger.error(f"关联的WebSocket不可用 [客户端: {client_id}], 属性open: {hasattr(conn.websocket, 'open') if conn.websocket else False}, 状态: {getattr(conn.websocket, 'open', None) if conn.websocket else None}")
             
             # 尝试方法3: 创建WebRTCConnection并存储Answer到待发送队列
             if not sent_answer:
@@ -242,15 +261,20 @@ class ConnectionManager:
                     
                     # 尝试立即发送answer
                     try:
+                        logger.info(f"直接发送Answer尝试 [客户端: {client_id}], WebSocket类型: {type(websocket)}")
                         # 检查WebSocket对象类型和方法
                         if hasattr(websocket, 'send_json'):
+                            logger.info(f"使用send_json方法发送Answer [客户端: {client_id}]")
                             await websocket.send_json(answer_data)
                         else:
+                            logger.info(f"使用send方法发送Answer [客户端: {client_id}]")
                             await websocket.send(json.dumps(answer_data))
                         logger.info(f"使用关联的WebSocket直接发送Answer成功 [客户端: {client_id}]")
                         sent_answer = True
                     except Exception as e:
                         logger.error(f"使用关联的WebSocket发送Answer失败: {str(e)} [客户端: {client_id}]")
+                        import traceback
+                        logger.error(f"直接发送Answer异常堆栈: {traceback.format_exc()}")
                 else:
                     logger.warning(f"无可用的WebSocket连接传入handle_offer [客户端: {client_id}]")
                 
@@ -264,6 +288,7 @@ class ConnectionManager:
                 # 如果仍然没有发送成功，通过守护线程重试
                 if not sent_answer:
                     logger.warning(f"无法立即发送Answer，将启动重试进程 [客户端: {client_id}]")
+                    logger.info(f"Answer待发送数据: {answer_data['type']}, SDP类型: {answer_data['sdp']['type']}")
                     asyncio.create_task(self._retry_send_answer(client_id))
             
             # 8. 如果有待处理的ICE候选者，添加它们
@@ -472,13 +497,44 @@ class ConnectionManager:
         参数:
         client_id: 客户端 ID
         websocket: 客户端的WebSocket连接
+        
+        返回:
+        bool: 关联是否成功
         """
+        # 如果WebRTCConnection已存在，直接关联
         if client_id in self.webrtc_connections:
             conn = self.webrtc_connections[client_id]
             conn.websocket = websocket
-            logger.warning(f"[SERVER-CONNECTION] 已关联WebSocket和WebRTC连接: {client_id}")
+            logger.info(f"[SERVER-CONNECTION] 已关联WebSocket到现有WebRTC连接 [客户端: {client_id}]")
+            
+            # 如果有待发送的Answer，立即尝试发送
+            if hasattr(conn, 'pending_answer') and conn.pending_answer:
+                try:
+                    if hasattr(websocket, 'send_json'):
+                        logger.info(f"[SERVER-CONNECTION] 使用send_json发送待发Answer [客户端: {client_id}]")
+                        asyncio.create_task(websocket.send_json(conn.pending_answer))
+                    else:
+                        logger.info(f"[SERVER-CONNECTION] 使用send发送待发Answer [客户端: {client_id}]")
+                        asyncio.create_task(websocket.send(json.dumps(conn.pending_answer)))
+                    logger.info(f"[SERVER-CONNECTION] 在关联时发送待发Answer成功 [客户端: {client_id}]")
+                except Exception as e:
+                    logger.error(f"[SERVER-CONNECTION] 关联时尝试发送Answer失败: {e}")
             return True
-        return False
+            
+        # 如果WebRTCConnection不存在，则创建一个新的
+        try:
+            # 正确创建对象：先创建WebRTCConnection对象，再设置websocket属性
+            conn = WebRTCConnection(client_id=client_id)
+            conn.websocket = websocket  # 直接设置websocket属性
+            self.webrtc_connections[client_id] = conn
+            
+            logger.info(f"[SERVER-CONNECTION] 创建新的WebRTCConnection并关联WebSocket [客户端: {client_id}]")
+            return True
+        except Exception as e:
+            logger.error(f"[SERVER-CONNECTION] 创建新的WebRTCConnection失败 [客户端: {client_id}]: {e}")
+            import traceback
+            logger.error(f"[SERVER-CONNECTION] 异常堆栈: {traceback.format_exc()}")
+            return False
         
     async def process_audio_frame(self, frame, client_id):
         """
@@ -542,35 +598,64 @@ class ConnectionManager:
             max_retries: 最大重试次数
             retry_interval: 重试间隔(秒)
         """
+        logger.info(f"[重试机制] 启动Answer重试发送进程 [客户端: {client_id}, 最大重试: {max_retries}, 间隔: {retry_interval}s]")
+        
         if client_id not in self.webrtc_connections:
-            logger.error(f"WebRTCConnection对象不存在 [客户端: {client_id}]")
+            logger.error(f"[重试机制] WebRTCConnection对象不存在 [客户端: {client_id}]")
             return
             
         conn = self.webrtc_connections[client_id]
+        logger.info(f"[重试机制] 获取到WebRTCConnection对象 [客户端: {client_id}, websocket存在: {conn.websocket is not None}]")
+        
         if not hasattr(conn, 'pending_answer') or conn.pending_answer is None:
-            logger.error(f"没有待发送的Answer [客户端: {client_id}]")
+            logger.error(f"[重试机制] 没有待发送的Answer [客户端: {client_id}]")
             return
+        else:
+            answer_type = conn.pending_answer.get('type', 'unknown')
+            sdp_info = conn.pending_answer.get('sdp', {})
+            sdp_type = sdp_info.get('type', 'unknown') if isinstance(sdp_info, dict) else 'unknown'
+            logger.info(f"[重试机制] 待发送Answer信息 [客户端: {client_id}, 类型: {answer_type}, SDP类型: {sdp_type}]")
             
         retries = 0
         while retries < max_retries:
+            logger.info(f"[重试机制] 开始第{retries+1}次尝试 [客户端: {client_id}]")
+            
             # 检查WebSocket连接
-            if conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
-                try:
-                    # 发送Answer
-                    await conn.websocket.send(json.dumps(conn.pending_answer))
-                    logger.info(f"重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
-                    
-                    # 清除待发送的Answer
-                    conn.pending_answer = None
-                    return True
-                except Exception as e:
-                    logger.error(f"重试发送Answer失败 [客户端: {client_id}, 尝试次数: {retries+1}]: {e}")
+            if conn.websocket:
+                ws_status = "open" if hasattr(conn.websocket, 'open') and conn.websocket.open else "closed"
+                logger.info(f"[重试机制] WebSocket状态 [客户端: {client_id}, 状态: {ws_status}, 类型: {type(conn.websocket)}]")
+                
+                if hasattr(conn.websocket, 'open') and conn.websocket.open:
+                    try:
+                        # 尝试发送Answer的不同方法
+                        answer_json = json.dumps(conn.pending_answer)
+                        logger.info(f"[重试机制] 准备发送Answer [客户端: {client_id}, 数据长度: {len(answer_json)}]")
+                        
+                        if hasattr(conn.websocket, 'send_json'):
+                            logger.info(f"[重试机制] 使用send_json方法 [客户端: {client_id}]")
+                            await conn.websocket.send_json(conn.pending_answer)
+                        else:
+                            logger.info(f"[重试机制] 使用send+json.dumps方法 [客户端: {client_id}]")
+                            await conn.websocket.send(answer_json)
+                            
+                        logger.info(f"[重试机制] 重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
+                        
+                        # 清除待发送的Answer
+                        conn.pending_answer = None
+                        return True
+                    except Exception as e:
+                        logger.error(f"[重试机制] 重试发送Answer失败 [客户端: {client_id}, 尝试次数: {retries+1}]: {e}")
+                        import traceback
+                        logger.error(f"[重试机制] 异常堆栈: {traceback.format_exc()}")
+            else:
+                logger.error(f"[重试机制] WebSocket对象不存在 [客户端: {client_id}, 尝试次数: {retries+1}]")
             
             # 如果发送失败，等待后重试
+            logger.info(f"[重试机制] 等待{retry_interval}秒后重试 [客户端: {client_id}, 当前重试次数: {retries+1}]")
             await asyncio.sleep(retry_interval)
             retries += 1
             
-        logger.error(f"多次尝试发送Answer均失败 [客户端: {client_id}, 最大尝试次数: {max_retries}]")
+        logger.error(f"[重试机制] 多次尝试发送Answer均失败 [客户端: {client_id}, 最大尝试次数: {max_retries}]")
         return False
         
     async def close_all_connections(self):
