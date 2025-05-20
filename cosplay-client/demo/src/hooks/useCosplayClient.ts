@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { CosplayClient, ClientEvent, ConnectionState, MessageType } from 'cosplay-client';
 
+// Global singleton instance to persist across component remounts
+let globalClientInstance: CosplayClient | null = null;
+
 interface UseCosplayClientOptions {
   serverUrl: string;
   deviceId?: string;
@@ -31,14 +34,14 @@ export function useCosplayClient({
   
   // 初始化客户端
   useEffect(() => {
-    console.log(`[DEBUG] useCosplayClient useEffect - clientRef.current: ${!!clientRef.current}, autoConnect: ${autoConnect}`);
+    console.log(`[DEBUG] useCosplayClient useEffect - globalClientInstance: ${!!globalClientInstance}, clientRef.current: ${!!clientRef.current}, autoConnect: ${autoConnect}`);
     
-    // 确保只创建一次客户端实例
-    if (!clientRef.current) {
-      console.log('[DEBUG] UseCosplayClient: Creating NEW client with WebRTC enabled');
+    // 使用全局单例模式确保只创建一次客户端实例
+    if (!globalClientInstance) {
+      console.log('[DEBUG] UseCosplayClient: Creating NEW client with WebRTC enabled (global singleton)');
       
       // 创建CosplayClient实例
-      clientRef.current = new CosplayClient({
+      globalClientInstance = new CosplayClient({
         serverUrl,
         deviceId,
         clientId,
@@ -61,12 +64,17 @@ export function useCosplayClient({
         },
       });
       
-      console.log('[DEBUG] Client created, setting up event listeners');
-      // 设置事件监听器
-      setupEventListeners();
+      console.log('[DEBUG] Global client singleton created');
     } else {
-      console.log('[DEBUG] Using EXISTING client instance');
+      console.log('[DEBUG] Using EXISTING global client instance');
     }
+    
+    // 将全局实例分配给当前组件的ref
+    clientRef.current = globalClientInstance;
+    
+    // 设置事件监听器 - 每次组件挂载时都需要重新设置
+    console.log('[DEBUG] Setting up event listeners');
+    setupEventListeners();
     
     // 自动连接 - 仅在初始化后执行一次
     // 将连接逻辑移到这里，而不是放在客户端创建内部
@@ -83,19 +91,11 @@ export function useCosplayClient({
       }
     }
     
-    // 组件卸载时断开连接并清理资源
+    // 组件卸载时不需要销毁全局实例，只需要清理当前组件的引用
     return () => {
-      console.log('[DEBUG] Component unmounting, cleaning up client');
-      if (clientRef.current) {
-        // 确保先停止录音，再断开连接
-        if (isRecording) {
-          console.log('[DEBUG] Stopping recording before disconnect');
-          clientRef.current.stopListening();
-        }
-        console.log('[DEBUG] Disconnecting client');
-        clientRef.current.disconnect();
-        clientRef.current = null;
-      }
+      console.log('[DEBUG] Component unmounting, NOT destroying global client instance');
+      // 只清理当前组件的引用，不销毁全局实例
+      clientRef.current = null;
     };
   }, [serverUrl, deviceId, clientId, autoConnect, isRecording]);
   
@@ -196,15 +196,18 @@ export function useCosplayClient({
     
   }, [addUserMessage, addAssistantMessage, addSystemMessage]);
   
-  // 连接/断开连接
+  // 连接到服务器
   const connect = useCallback(() => {
     if (clientRef.current && clientRef.current.getConnectionState() === ConnectionState.DISCONNECTED) {
+      console.log('[DEBUG] Connecting client');
       clientRef.current.connect();
     }
   }, []);
   
+  // 断开连接 - 注意这里不销毁全局实例，只是断开连接
   const disconnect = useCallback(() => {
     if (clientRef.current) {
+      console.log('[DEBUG] Disconnecting client (but keeping global instance)');
       clientRef.current.disconnect();
     }
   }, []);
@@ -276,6 +279,21 @@ export function useCosplayClient({
     setMessages([]);
   }, []);
   
+  // 添加一个方法来完全清理全局实例，只在需要完全重置时使用
+  const resetClient = useCallback(() => {
+    console.log('[DEBUG] Completely resetting global client instance');
+    if (globalClientInstance) {
+      if (isRecording) {
+        globalClientInstance.stopListening();
+      }
+      globalClientInstance.disconnect();
+      globalClientInstance = null;
+    }
+    clientRef.current = null;
+    setConnectionState(ConnectionState.DISCONNECTED);
+    setIsRecording(false);
+  }, [isRecording]);
+
   return {
     connectionState,
     messages,
@@ -287,6 +305,7 @@ export function useCosplayClient({
     stopRecording,
     sendTextMessage,
     toggleContinuousMode,
-    clearMessages
+    clearMessages,
+    resetClient // 导出这个方法以便在需要时完全重置客户端
   };
 }
