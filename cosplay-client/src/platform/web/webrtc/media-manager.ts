@@ -11,12 +11,13 @@ export class MediaManager {
   private mediaSource: MediaStreamAudioSourceNode | null = null;
   private audioProcessor: ScriptProcessorNode | null = null;
   private peerConnection: RTCPeerConnection | null = null;
-  private signalingClient: any = null; // 使用SignalingClient实例替代直接的WebSocket
+  private signalingClient: any = null;
   private webrtcConnected: boolean = false;
   private eventEmitter: EventEmitter;
   private isProcessing: boolean = false;
   private audioCallback: ((data: ArrayBuffer) => void) | null = null;
-  private audioSender: RTCRtpSender | null = null;
+  private audioPacketCounter: number = 0;
+  private lastLogTime: number = 0;
 
   /**
    * 构造函数
@@ -136,10 +137,6 @@ export class MediaManager {
     }
   }
 
-  // 添加音频包计数
-  private audioPacketCounter: number = 0;
-  private lastLogTime: number = 0;
-
   /**
    * 处理音频数据
    * @param event 音频处理事件
@@ -151,128 +148,31 @@ export class MediaManager {
     const inputBuffer = event.inputBuffer;
     const inputData = inputBuffer.getChannelData(0);
 
-    // 获取全局配置变量
-    const globalConfig = (window as any).XIAOZHI_CONFIG || {};
-    const codecInfo = (window as any).XIAOZHI_CODEC_INFO || {};
-    
-    // 使用配置和相关音频格式信息
-    const configFormat = globalConfig.audioConfig?.format || 'unknown';
-    const sdpFormat = codecInfo.name || 'unknown';
-    
-    // 检查实际的ICE连接状态，而不仅仅依赖this.webrtcConnected
-    let iceConnectionState = 'unknown';
-    let dataChannelState = 'unknown';
+    // 检查ICE连接状态
+    let isConnected = false;
     if (this.peerConnection) {
-      iceConnectionState = this.peerConnection.iceConnectionState;
-      // RTCPeerConnection对象上没有dataChannel属性
-      // 这里可以检查不同的连接状态
-      dataChannelState = this.peerConnection.connectionState || 'unknown';
+      isConnected = ['connected', 'completed'].includes(this.peerConnection.iceConnectionState);
+      
+      // 每100个包才记录一次连接状态，减少日志输出
+      if (this.audioPacketCounter % 100 === 0) {
+        console.log(`[CLIENT-CONNECTION] ICE状态: ${this.peerConnection.iceConnectionState}, 连接状态: ${this.peerConnection.connectionState || 'unknown'}`);
+      }
     }
     
-    // 仅当协商成功并且ICE在connected或completed状态时才使用Opus
-    let isConnected = [
-      'connected', 
-      'completed'
-    ].includes(iceConnectionState);
-    
-    // 显示当前连接状态
-    console.log(`[CLIENT-CONNECTION] ICE状态: ${iceConnectionState}, 数据通道状态: ${dataChannelState}`);
-    
-    // 强制设置为opus，即使连接未建立完成
-    // 这样可以确保我们的音频数据可以被asr服务解析
-    const audioFormat = 'opus';
-    
-    // 强制日志显示
-    console.log(`[CLIENT-AUDIO-DEBUG] WebRTC连接状态: ${isConnected}, 强制使用格式: ${audioFormat}, 编解码器协商状态: ${JSON.stringify(codecInfo)}`);
-    
-    // 修改全局状态变量以确保一致性
+    // 更新连接状态
     this.webrtcConnected = isConnected;
 
-    
     // 转换为16bit PCM
     const pcmData = this.floatTo16BitPCM(inputData);
+    const audioDataToSend = pcmData.buffer;
     
-    // 处理音频数据 - 我们需要确保实际使用Opus编码
-    let audioDataToSend;
-    let actualFormat = audioFormat;
-    
-    // 在WebRTC中正确使用内置的编解码器
-    // 我们不应该自己手动添加头部或尝试自己进行编码
-    
-    // 检查是否已经有WebRTC连接和音频发送器
-    if (!this.audioSender && this.peerConnection) {
-      // 如果还没有音频发送器，使用getUserMedia获取一个音频轨道
-      console.log(`[CLIENT-CODEC] 创建音频流发送器来利用WebRTC的内置编解码器`);
-      
-      // 保存peerConnection引用以避免空值错误
-      const peerConnection = this.peerConnection;
-      
-      navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
-        // 再次检查peerConnection是否存在，因为可能在异步操作期间发生变化
-        if (!peerConnection) {
-          console.error('[CLIENT-CODEC] 获取音频流后，peerConnection不再可用');
-          return;
-        }
-        
-        const audioTrack = stream.getAudioTracks()[0];
-        
-        // 将音频轨道添加到连接中
-        this.audioSender = peerConnection.addTrack(audioTrack, stream);
-        
-        // 设置编解码器参数（如果浏览器支持）
-        if (this.audioSender && this.audioSender.getParameters && typeof this.audioSender.getParameters === 'function') {
-          const params = this.audioSender.getParameters();
-          if (params.encodings) {
-            params.encodings.forEach((encoding: any) => {
-              encoding.maxBitrate = 32000; // Opus 编码参数
-              encoding.priority = 'high';
-            });
-            
-            if (this.audioSender.setParameters) {
-              this.audioSender.setParameters(params).catch((e: Error) => {
-                console.error('[CLIENT-CODEC] 设置音频发送器参数时出错:', e);
-              });
-            }
-          }
-        }
-        
-        console.log(`[CLIENT-CODEC] 成功添加音频轨道，使用WebRTC内置编解码器: ${sdpFormat}`);
-      }).catch(e => {
-        console.error('[CLIENT-CODEC] 获取音频流失败:', e);
-      });
-    }
-    
-    // 通过WebRTC的标准机制发送PCM数据，出口会自动应用Opus编码
-    audioDataToSend = pcmData.buffer;
-    actualFormat = 'opus'; // 标记为opus，因为最终建立的连接会使用opus
-    
-    console.log(`[CLIENT-CODEC] 发送PCM数据到WebRTC栈，将自动应用${sdpFormat}编码，数据大小: ${audioDataToSend.byteLength} 字节`);
-
-
-    
-    // 在第一个包或每50包打印详细的音频格式信息
-    if (this.audioPacketCounter === 0 || this.audioPacketCounter % 50 === 0) {
-      console.log(`[CLIENT-AUDIO-FORMAT] 音频格式详情:
-        - 配置格式: ${configFormat}
-        - 协商编解码器: ${sdpFormat}
-        - 当前使用格式: ${actualFormat}
-        - 采样率: ${inputBuffer.sampleRate} Hz
-        - 通道数: ${inputBuffer.numberOfChannels}
-        - 大小: ${audioDataToSend.byteLength} 字节
-        - WebRTC状态: ${this.webrtcConnected ? '已连接' : '未连接'}`);
+    // 每100个包打印一次音频格式信息，减少日志输出
+    if (this.audioPacketCounter === 0 || this.audioPacketCounter % 100 === 0) {
+      console.log(`[CLIENT-AUDIO] 音频包 #${this.audioPacketCounter}, 采样率: ${inputBuffer.sampleRate}Hz, 大小: ${audioDataToSend.byteLength}字节`);
     }
     
     // 增加音频包计数
     this.audioPacketCounter++;
-    const now = Date.now();
-    
-    // 每个音频包都记录日志（为了调试需要）
-    console.log(`[CLIENT-AUDIO] 发送音频数据包 #${this.audioPacketCounter}, 格式: ${actualFormat}, 大小: ${audioDataToSend.byteLength} 字节, 时间: ${new Date().toISOString()}`);
-    
-    // 每10个数据包打印一次统计信息
-    if (this.audioPacketCounter % 10 === 0) {
-      console.log(`[CLIENT-AUDIO] 已发送 ${this.audioPacketCounter} 个音频数据包, 总计 ${this.audioPacketCounter * audioDataToSend.byteLength} 字节`);
-    }
     
     // 如果设置了回调，则调用回调
     if (this.audioCallback) {
@@ -280,7 +180,7 @@ export class MediaManager {
     }
 
     // 发出事件
-    this.eventEmitter.emit(WebRTCEvent.AUDIO_SENT, pcmData.buffer);
+    this.eventEmitter.emit(WebRTCEvent.AUDIO_SENT, audioDataToSend);
   }
 
   /**
@@ -359,8 +259,7 @@ export class MediaManager {
   private async initWebRTCConnection(): Promise<void> {
     console.log('[XIAOZHI-CLIENT] 开始初始化WebRTC连接');
     
-    // 创建RTC对等连接
-    // 不使用外部STUN服务器，仅使用直连模式
+    // 创建RTC对等连接 - 使用直连模式
     this.peerConnection = new RTCPeerConnection({
       iceServers: []
     });
@@ -388,13 +287,9 @@ export class MediaManager {
       if (event.candidate) {
         console.log('[XIAOZHI-CLIENT] 发现新的ICE候选者');
         
-        // 关键修复：使用SignalingClient发送ICE候选者
         if (this.signalingClient && this.signalingClient.isConnected()) {
-          // 使用SignalingClient的sendIceCandidate方法发送候选者
           const success = this.signalingClient.sendIceCandidate(event.candidate);
-          if (success) {
-            console.log('[XIAOZHI-CLIENT] 已成功发送ICE候选者到信令服务器');
-          } else {
+          if (!success) {
             console.error('[XIAOZHI-CLIENT] 发送ICE候选者失败');
           }
         } else {
@@ -407,7 +302,6 @@ export class MediaManager {
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach(track => {
         this.peerConnection?.addTrack(track, this.localStream!);
-        console.log('[XIAOZHI-CLIENT] 音频轨道已添加到WebRTC连接');
       });
     }
 
@@ -425,9 +319,7 @@ export class MediaManager {
       // 发送offer到信令服务器
       if (this.signalingClient && this.signalingClient.isConnected()) {
         const success = this.signalingClient.sendOffer(offer);
-        if (success) {
-          console.log('[XIAOZHI-CLIENT] 已成功发送SDP offer到信令服务器');
-        } else {
+        if (!success) {
           console.error('[XIAOZHI-CLIENT] 发送SDP offer失败');
         }
       } else {
