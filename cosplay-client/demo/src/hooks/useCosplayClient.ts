@@ -31,8 +31,11 @@ export function useCosplayClient({
   
   // 初始化客户端
   useEffect(() => {
+    console.log(`[DEBUG] useCosplayClient useEffect - clientRef.current: ${!!clientRef.current}, autoConnect: ${autoConnect}`);
+    
+    // 确保只创建一次客户端实例
     if (!clientRef.current) {
-      console.log('UseCosplayClient: Creating client with WebRTC enabled');
+      console.log('[DEBUG] UseCosplayClient: Creating NEW client with WebRTC enabled');
       
       // 创建CosplayClient实例
       clientRef.current = new CosplayClient({
@@ -58,76 +61,43 @@ export function useCosplayClient({
         },
       });
       
+      console.log('[DEBUG] Client created, setting up event listeners');
       // 设置事件监听器
       setupEventListeners();
+    } else {
+      console.log('[DEBUG] Using EXISTING client instance');
+    }
+    
+    // 自动连接 - 仅在初始化后执行一次
+    // 将连接逻辑移到这里，而不是放在客户端创建内部
+    // 这样可以避免重复连接
+    if (clientRef.current && autoConnect) {
+      const currentState = clientRef.current.getConnectionState();
+      console.log(`[DEBUG] Connection check - current state: ${currentState}`);
       
-      // 自动连接
-      if (autoConnect) {
+      if (currentState === ConnectionState.DISCONNECTED) {
+        console.log('[DEBUG] Client disconnected, attempting to connect');
         clientRef.current.connect();
+      } else {
+        console.log(`[DEBUG] Client already in state: ${currentState}, not connecting`);
       }
     }
     
-    // 组件卸载时断开连接
+    // 组件卸载时断开连接并清理资源
     return () => {
+      console.log('[DEBUG] Component unmounting, cleaning up client');
       if (clientRef.current) {
+        // 确保先停止录音，再断开连接
+        if (isRecording) {
+          console.log('[DEBUG] Stopping recording before disconnect');
+          clientRef.current.stopListening();
+        }
+        console.log('[DEBUG] Disconnecting client');
         clientRef.current.disconnect();
         clientRef.current = null;
       }
     };
-  }, [serverUrl, deviceId, clientId, autoConnect]);
-  
-  // 设置事件监听器
-  const setupEventListeners = useCallback(() => {
-    if (!clientRef.current) return;
-    
-    const client = clientRef.current;
-    
-    // 连接状态变化 - 仅更新状态，不添加到对话历史
-    client.on(ClientEvent.CONNECTED, () => {
-      setConnectionState(ConnectionState.CONNECTED);
-      // 不要在对话框中添加连接状态消息
-      // addSystemMessage('已连接到服务器');
-      
-      // 可以在控制台记录连接状态，但不影响UI
-      console.log('已连接到服务器');
-    });
-    
-    client.on(ClientEvent.DISCONNECTED, () => {
-      setConnectionState(ConnectionState.DISCONNECTED);
-      setIsRecording(false);
-      // 不要在对话框中添加连接状态消息
-      // addSystemMessage('已断开连接');
-      
-      // 可以在控制台记录连接状态，但不影响UI
-      console.log('已断开连接');
-    });
-    
-    // 语音识别结果
-    client.on(ClientEvent.SPEECH_RECOGNITION, (data: any) => {
-      if (data.final) {
-        addUserMessage(data.text);
-      }
-    });
-    
-    // 错误处理
-    client.on(ClientEvent.ERROR, (error: any) => {
-      console.error('Client error:', error);
-      addSystemMessage(`发生错误: ${error}`);
-    });
-    
-    // 收到消息（可扩展处理不同类型的消息）
-    client.on(ClientEvent.MESSAGE, (event: any) => {
-      try {
-        const data = JSON.parse(event.detail);
-        if (data.type === MessageType.TEXT) {
-          addAssistantMessage(data.text);
-        }
-      } catch (e) {
-        // 处理非JSON消息（如二进制数据）
-      }
-    });
-    
-  }, []);
+  }, [serverUrl, deviceId, clientId, autoConnect, isRecording]);
   
   // 添加消息到对话历史
   const addUserMessage = useCallback((text: string) => {
@@ -166,9 +136,69 @@ export function useCosplayClient({
     ]);
   }, []);
   
+  // 设置事件监听器 - 移动到消息处理函数之后，避免引用错误
+  const setupEventListeners = useCallback(() => {
+    if (!clientRef.current) return;
+    
+    const client = clientRef.current;
+    
+    // 先移除所有现有的事件监听器，防止重复添加
+    client.off(ClientEvent.CONNECTED, () => {});
+    client.off(ClientEvent.DISCONNECTED, () => {});
+    client.off(ClientEvent.SPEECH_RECOGNITION, () => {});
+    client.off(ClientEvent.ERROR, () => {});
+    client.off(ClientEvent.MESSAGE, () => {});
+    
+    // 连接状态变化 - 仅更新状态，不添加到对话历史
+    client.on(ClientEvent.CONNECTED, () => {
+      setConnectionState(ConnectionState.CONNECTED);
+      // 不要在对话框中添加连接状态消息
+      // addSystemMessage('已连接到服务器');
+      
+      // 可以在控制台记录连接状态，但不影响UI
+      console.log('已连接到服务器  修复cosplay-client里面 webRTC 重复实例化的问题');
+    });
+    
+    client.on(ClientEvent.DISCONNECTED, () => {
+      setConnectionState(ConnectionState.DISCONNECTED);
+      setIsRecording(false);
+      // 不要在对话框中添加连接状态消息
+      // addSystemMessage('已断开连接');
+      
+      // 可以在控制台记录连接状态，但不影响UI
+      console.log('已断开连接');
+    });
+    
+    // 语音识别结果
+    client.on(ClientEvent.SPEECH_RECOGNITION, (data: any) => {
+      if (data.final) {
+        addUserMessage(data.text);
+      }
+    });
+    
+    // 错误处理
+    client.on(ClientEvent.ERROR, (error: any) => {
+      console.error('Client error:', error);
+      addSystemMessage(`发生错误: ${error}`);
+    });
+    
+    // 收到消息（可扩展处理不同类型的消息）
+    client.on(ClientEvent.MESSAGE, (event: any) => {
+      try {
+        const data = JSON.parse(event.detail);
+        if (data.type === MessageType.TEXT) {
+          addAssistantMessage(data.text);
+        }
+      } catch (e) {
+        // 处理非JSON消息（如二进制数据）
+      }
+    });
+    
+  }, [addUserMessage, addAssistantMessage, addSystemMessage]);
+  
   // 连接/断开连接
   const connect = useCallback(() => {
-    if (clientRef.current) {
+    if (clientRef.current && clientRef.current.getConnectionState() === ConnectionState.DISCONNECTED) {
       clientRef.current.connect();
     }
   }, []);

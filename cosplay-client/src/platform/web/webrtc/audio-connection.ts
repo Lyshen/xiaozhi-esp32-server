@@ -16,12 +16,14 @@ export class WebRTCAudioConnection {
   private state: WebRTCConnectionState = WebRTCConnectionState.NEW;
   private pendingCandidates: RTCIceCandidate[] = [];
   private isInitiator: boolean = false;
+  private instanceId: string = `webrtc_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
 
   /**
    * 构造函数
    * @param config WebRTC配置
    */
   constructor(config: WebRTCConfig) {
+    console.log(`[DEBUG] WebRTCAudioConnection constructor called, instance ID: ${this.instanceId}`);
     this.config = config;
     this.eventEmitter = new EventEmitter();
     this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter);
@@ -34,6 +36,8 @@ export class WebRTCAudioConnection {
     this.eventEmitter.on(SignalingMessageType.OFFER, this.handleRemoteOffer.bind(this));
     this.eventEmitter.on(SignalingMessageType.ANSWER, this.handleRemoteAnswer.bind(this));
     this.eventEmitter.on(SignalingMessageType.ICE_CANDIDATE, this.handleRemoteIceCandidate.bind(this));
+    
+    console.log(`[DEBUG] WebRTCAudioConnection constructor completed, instance ID: ${this.instanceId}`);
   }
 
   /**
@@ -452,6 +456,8 @@ export class WebRTCAudioConnection {
    * 断开连接并清理资源
    */
   public disconnect(): void {
+    console.log(`[DEBUG] WebRTCAudioConnection.disconnect called, instance ID: ${this.instanceId}`);
+    
     // 关闭媒体管理器
     this.mediaManager.dispose();
     
@@ -465,6 +471,14 @@ export class WebRTCAudioConnection {
     }
     
     this.setState(WebRTCConnectionState.CLOSED);
-    console.log('WebRTCAudioConnection: Disconnected and resources cleaned up');
+    console.log(`[DEBUG] WebRTCAudioConnection: Disconnected and resources cleaned up, instance ID: ${this.instanceId}`);
+  }
+  
+  /**
+   * 获取实例 ID
+   * @returns 实例 ID
+   */
+  public getInstanceId(): string {
+    return this.instanceId;
   }
 }

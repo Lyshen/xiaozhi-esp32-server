@@ -24,6 +24,13 @@ export class CosplayClient {
    * @param config 客户端配置
    */
   constructor(config: ClientConfig) {
+    console.log('[DEBUG] CosplayClient constructor called with config:', JSON.stringify({
+      serverUrl: config.serverUrl,
+      deviceId: config.deviceId,
+      clientId: config.clientId,
+      audioConfig: config.audioConfig
+    }, null, 2));
+    
     // 合并默认配置
     this.config = {
       ...config,
@@ -44,12 +51,14 @@ export class CosplayClient {
       }
     };
     
+    console.log('[DEBUG] Creating event emitter and message handler');
     // 创建事件发射器
     this.eventEmitter = new EventEmitter();
     
     // 创建消息处理器
     this.messageHandler = new MessageHandler(this.eventEmitter);
     
+    console.log('[DEBUG] Creating connection using DefaultConnectionFactory');
     // 创建连接
     const connectionFactory = new DefaultConnectionFactory();
     this.connection = connectionFactory.createConnection(this.config);
@@ -59,8 +68,11 @@ export class CosplayClient {
     this.connection.setErrorHandler(this.onError.bind(this));
     this.connection.setStateChangeHandler(this.onConnectionStateChange.bind(this));
     
+    console.log('[DEBUG] Initializing audio components');
     // 初始化音频组件
     this.initializeAudioComponents();
+    
+    console.log('[DEBUG] CosplayClient constructor completed');
   }
   
   /**
@@ -68,29 +80,37 @@ export class CosplayClient {
    */
   private initializeAudioComponents(): void {
     try {
+      console.log('[DEBUG] Creating WebAudioFactory');
       const audioFactory: AudioFactory = new WebAudioFactory();
       
       if (audioFactory.isSupported()) {
+        console.log('[DEBUG] Audio is supported, creating recorder and player');
+        console.log('[DEBUG] Audio config:', JSON.stringify(this.config.audioConfig, null, 2));
+        
         this.audioRecorder = audioFactory.createRecorder(this.config.audioConfig!);
         this.audioPlayer = audioFactory.createPlayer(this.config.audioConfig!);
         
+        console.log('[DEBUG] Setting up audio callbacks');
         // 设置音频回调
         this.audioRecorder.setAudioCallback(this.onAudioData.bind(this));
         this.audioPlayer.setPlaybackEndCallback(() => {
           this.eventEmitter.emit(ClientEvent.AUDIO_PLAY_END);
         });
         
+        console.log('[DEBUG] Setting up audio event listeners');
         // 监听音频事件
         this.eventEmitter.on(ClientEvent.AUDIO_PLAY_START, (data: ArrayBuffer) => {
           if (this.audioPlayer) {
             this.audioPlayer.play(data);
           }
         });
+        
+        console.log('[DEBUG] Audio components initialized successfully');
       } else {
-        console.warn('Audio is not supported in the current environment');
+        console.warn('[DEBUG] Audio is not supported in the current environment');
       }
     } catch (error) {
-      console.error('Failed to initialize audio components:', error);
+      console.error('[DEBUG] Failed to initialize audio components:', error);
     }
   }
   
@@ -99,16 +119,22 @@ export class CosplayClient {
    * @returns 连接是否成功的Promise
    */
   public async connect(): Promise<boolean> {
+    console.log('[DEBUG] CosplayClient.connect() called');
     try {
+      console.log('[DEBUG] Attempting to connect to server');
       const connected = await this.connection.connect();
       
       if (connected) {
+        console.log('[DEBUG] Connection successful, sending hello message');
         // 发送hello消息
         await this.sendHello();
+      } else {
+        console.log('[DEBUG] Connection failed');
       }
       
       return connected;
     } catch (error) {
+      console.error('[DEBUG] Connection error:', error);
       this.onError(error as Error);
       return false;
     }
@@ -118,14 +144,18 @@ export class CosplayClient {
    * 断开连接
    */
   public disconnect(): void {
+    console.log('[DEBUG] CosplayClient.disconnect() called');
     try {
       // 停止录音
+      console.log('[DEBUG] Stopping listening before disconnect');
       this.stopListening();
       
       // 断开连接
+      console.log('[DEBUG] Disconnecting from server');
       this.connection.disconnect();
+      console.log('[DEBUG] Disconnect completed');
     } catch (error) {
-      console.error('Error disconnecting:', error);
+      console.error('[DEBUG] Error disconnecting:', error);
     }
   }
   
@@ -273,23 +303,27 @@ export class CosplayClient {
    * @param state 连接状态
    */
   private onConnectionStateChange(state: ConnectionState): void {
-    console.log('Connection state changed:', state);
+    console.log('[DEBUG] Connection state changed:', state);
     
     switch (state) {
       case ConnectionState.CONNECTING:
+        console.log('[DEBUG] Emitting CONNECTING event');
         this.eventEmitter.emit(ClientEvent.CONNECTING);
         break;
         
       case ConnectionState.CONNECTED:
+        console.log('[DEBUG] Emitting CONNECTED event');
         this.eventEmitter.emit(ClientEvent.CONNECTED);
         break;
         
       case ConnectionState.DISCONNECTED:
+        console.log('[DEBUG] Setting listening state to IDLE and emitting DISCONNECTED event');
         this.listeningState = ListeningState.IDLE;
         this.eventEmitter.emit(ClientEvent.DISCONNECTED);
         break;
         
       case ConnectionState.ERROR:
+        console.log('[DEBUG] Setting listening state to IDLE and emitting ERROR event');
         this.listeningState = ListeningState.IDLE;
         this.eventEmitter.emit(ClientEvent.ERROR, new Error('Connection error'));
         break;

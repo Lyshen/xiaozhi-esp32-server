@@ -30,6 +30,12 @@ export class WebRTCRecorder implements AudioRecorder {
    */
   public async initialize(): Promise<boolean> {
     try {
+      // 如果已经初始化，则直接返回成功
+      if (this.state === AudioRecorderState.INITIALIZED || this.webrtcConnection) {
+        console.log('WebRTCRecorder: Already initialized, reusing existing connection');
+        return true;
+      }
+      
       console.log('WebRTCRecorder: Beginning initialization with config:', JSON.stringify(this.config, null, 2));
       
       // 检查是否支持WebRTC
