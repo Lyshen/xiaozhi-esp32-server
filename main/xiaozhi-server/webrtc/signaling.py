@@ -9,6 +9,7 @@ WebRTC信令处理模块
 import json
 import logging
 import asyncio
+import time
 from aiohttp import web, WSMsgType
 import uuid
 
@@ -42,27 +43,50 @@ class SignalingHandler:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
-        # 获取客户端ID (从查询参数或生成新的)
-        client_id = request.query.get('client_id')
+        # 获取请求头和连接信息，用于调试
+        headers = request.headers
+        remote_ip = request.remote
+        path = request.path
+        host = request.host
+        
+        logger.info(f"WebRTC信令服务器收到新连接请求: 来源IP={remote_ip}, 路径={path}, 主机={host}")
+        logger.info(f"WebRTC信令服务器收到请求头: {headers}")
+        
+        # 获取客户端ID (从查询参数或头部或生成新的)
+        client_id = request.query.get('client_id') or headers.get('Client-ID') or headers.get('client-id')
         if not client_id:
             client_id = str(uuid.uuid4())
+            logger.info(f"WebRTC信令服务器生成新客户端ID: {client_id}")
+        else:
+            logger.info(f"WebRTC信令服务器使用现有客户端ID: {client_id}")
             
         # 创建会话ID
         session_id = str(uuid.uuid4())
         self.websockets[client_id] = ws
         self.sessions[session_id] = client_id
         
-        # 记录连接信息，可以用于调试
-        logger.debug(f"WebRTC新客户端连接 [ID: {client_id}]")
-        # 注意：我们不再注册连接对象，直接简化处理
+        # 尝试关联WebSocket到WebRTCConnection
+        # 这是关键改动 - 将信令WebSocket与WebRTC连接关联
+        if hasattr(self.connection_manager, 'associate_websocket'):
+            success = self.connection_manager.associate_websocket(client_id, ws)
+            if success:
+                logger.info(f"[SIGNALING] 成功将WebSocket关联到WebRTC连接 [ID: {client_id}]")
+            else:
+                logger.warning(f"[SIGNALING] WebRTC连接对象尚不存在，将在需要时创建 [ID: {client_id}]")
+        else:
+            logger.error(f"[SIGNALING] ConnectionManager缺少associate_websocket方法！")
         
-        logger.info(f"WebRTC信令: 新的客户端连接 [ID: {client_id}, 会话: {session_id}]")
+        logger.info(f"WebRTC信令: 新的客户端连接已建立 [ID: {client_id}, 会话: {session_id}]")
         
-        # 发送连接确认消息
+        # 发送连接确认消息，包含服务器配置信息
         await ws.send_json({
             "type": "connected",
             "client_id": client_id,
-            "session_id": session_id
+            "session_id": session_id,
+            "server_info": {
+                "container_ip": request.host,  # 在Docker中这将是容器IP
+                "timestamp": int(time.time())
+            }
         })
         
         try:

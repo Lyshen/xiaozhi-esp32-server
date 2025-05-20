@@ -203,17 +203,74 @@ class ConnectionManager:
                 "client_id": client_id
             }
             
-            # 通过信令通道发送Answer
-            if websocket and websocket.open:
-                await websocket.send(json.dumps(answer_data))
-                logger.info(f"发送Answer [客户端: {client_id}]")
-            else:
-                logger.warning(f"无法发送Answer，WebSocket连接不可用 [客户端: {client_id}]")
+            sent_answer = False
+            
+            # 尝试方法1: 使用提供的websocket
+            if websocket and hasattr(websocket, 'open') and websocket.open:
+                try:
+                    await websocket.send(json.dumps(answer_data))
+                    logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
+                    sent_answer = True
+                except Exception as e:
+                    logger.error(f"使用传入的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+            
+            # 尝试方法2: 使用已关联的WebRTCConnection中的websocket
+            if not sent_answer and client_id in self.webrtc_connections:
+                conn = self.webrtc_connections.get(client_id)
+                if conn and conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
+                    try:
+                        await conn.websocket.send(json.dumps(answer_data))
+                        logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
+                        sent_answer = True
+                    except Exception as e:
+                        logger.error(f"使用关联的WebSocket发送Answer失败: {e} [客户端: {client_id}]")
+            
+            # 尝试方法3: 创建WebRTCConnection并存储Answer到待发送队列
+            if not sent_answer:
+                # 创建或获取WebRTCConnection对象
+                if client_id not in self.webrtc_connections:
+                    self.webrtc_connections[client_id] = WebRTCConnection(client_id=client_id)
+                    logger.info(f"创建了新的WebRTCConnection [客户端: {client_id}]")
+                
+                # 关键改动: 将WebSocket关联到WebRTCConnection
+                conn = self.webrtc_connections[client_id]
+                
+                # 显式设置websocket
+                if websocket:
+                    conn.websocket = websocket
+                    logger.info(f"成功关联WebSocket到WebRTCConnection [客户端: {client_id}]")
+                    
+                    # 尝试立即发送answer
+                    try:
+                        # 检查WebSocket对象类型和方法
+                        if hasattr(websocket, 'send_json'):
+                            await websocket.send_json(answer_data)
+                        else:
+                            await websocket.send(json.dumps(answer_data))
+                        logger.info(f"使用关联的WebSocket直接发送Answer成功 [客户端: {client_id}]")
+                        sent_answer = True
+                    except Exception as e:
+                        logger.error(f"使用关联的WebSocket发送Answer失败: {str(e)} [客户端: {client_id}]")
+                else:
+                    logger.warning(f"无可用的WebSocket连接传入handle_offer [客户端: {client_id}]")
+                
+                # 将Answer存储到连接对象中
+                conn.pending_answer = answer_data
+                logger.info(f"将Answer存储到连接对象 [客户端: {client_id}]")
+                
+                # 关联对等连接
+                conn.peer_connection = pc
+                
+                # 如果仍然没有发送成功，通过守护线程重试
+                if not sent_answer:
+                    logger.warning(f"无法立即发送Answer，将启动重试进程 [客户端: {client_id}]")
+                    asyncio.create_task(self._retry_send_answer(client_id))
             
             # 8. 如果有待处理的ICE候选者，添加它们
             if client_id in self.pending_candidates:
                 for candidate_data in self.pending_candidates[client_id]:
                     await self.handle_ice_candidate(client_id, candidate_data)
+        
                 # 清空待处理的候选者
                 self.pending_candidates.pop(client_id, None)
                 
@@ -328,77 +385,59 @@ class ConnectionManager:
                 # 创建RTCIceCandidate并添加到PeerConnection
                 from aiortc import RTCIceCandidate
                 
-                # 解析candidate字符串中的必要参数
                 try:
-                    # 将字典传递给addIceCandidate方法
-                    # aiortc内部会处理这个字典
-                    await pc.addIceCandidate({
-                        "candidate": candidate,
-                        "sdpMid": sdpMid,
-                        "sdpMLineIndex": sdpMLineIndex
-                    })
-                    logger.info(f"添加ICE候选者成功(字典方式) [客户端: {client_id}]")
-                except Exception as dict_err:
-                    logger.warning(f"使用字典添加候选者失败: {dict_err}")
-                    
-                    try:
-                        # 如果字典方式失败，尝试使用RTCIceCandidate对象
-                        # 解析候选者字符串来提取所需的组件
-                        if not candidate.startswith('candidate:'):
-                            candidate = 'candidate:' + candidate
-                            
-                        # 初步解析从候选者字符串中提取组件
-                        parts = candidate.split(' ')
-                        if len(parts) >= 10 and parts[0].startswith('candidate:'):
-                            # 這裡假設格式為: candidate:foundation component protocol priority ip port type ... 
-                            foundation = parts[0].replace('candidate:', '')
-                            component = int(parts[1])
-                            protocol = parts[2]
-                            priority = int(parts[3])
-                            ip = parts[4]
-                            port = int(parts[5])
-                            type = parts[7]
-                            
-                            # 创建RTCIceCandidate对象
-                            ice = RTCIceCandidate(
-                                foundation=foundation,
-                                component=component,
-                                protocol=protocol,
-                                priority=priority,
-                                ip=ip,
-                                port=port,
-                                type=type,
-                                sdpMid=sdpMid,
-                                sdpMLineIndex=sdpMLineIndex
-                            )
-                            
-                            # 添加到对等连接
-                            await pc.addIceCandidate(ice)
-                            logger.info(f"添加ICE候选者成功(对象方式) [客户端: {client_id}]")
-                        else:
-                            logger.error(f"无法解析候选者字符串: {candidate}")
-                    except Exception as obj_err:
-                        logger.error(f"使用对象添加候选者失败: {obj_err}")
-                        # 最后一次尝试 - 直接将原始字符串传递给底层API
-                        logger.warning("尝试最后的方法...")
-                        # 使用RTCPeerConnection内部方法
-                        try:
-                            pc._addRemoteIceCandidate(
-                                sdpMid=sdpMid,
-                                sdpMLineIndex=sdpMLineIndex,
-                                candidate=candidate
-                            )
-                            logger.info(f"使用内部API添加候选者成功 [客户端: {client_id}]")
-                        except Exception as internal_err:
-                            logger.error(f"所有添加候选者方法均失败: {internal_err}")
-                            logger.error(f"原始候选者数据: {candidate_data}")
-                            # 最后的尝试 - 重新触发ICE收集
-                            await pc.setLocalDescription(await pc.createAnswer())
-                            logger.info("重新触发了本地ICE收集过程")
+                    # 直接使用成功的对象方式处理
+                    # 先统一格式，确保开头有candidate:
+                    if not candidate.startswith('candidate:'):
+                        candidate = 'candidate:' + candidate
+                        
+                    # 解析候选者字符串中的必要参数
+                    parts = candidate.split(' ')
+                    if len(parts) >= 10 and parts[0].startswith('candidate:'):
+                        # 格式为: candidate:foundation component protocol priority ip port type ... 
+                        foundation = parts[0].replace('candidate:', '')
+                        component = int(parts[1])
+                        protocol = parts[2]
+                        priority = int(parts[3])
+                        ip = parts[4]
+                        port = int(parts[5])
+                        type = parts[7]
+                        
+                        # 创建RTCIceCandidate对象
+                        ice = RTCIceCandidate(
+                            foundation=foundation,
+                            component=component,
+                            protocol=protocol,
+                            priority=priority,
+                            ip=ip,
+                            port=port,
+                            type=type,
+                            sdpMid=sdpMid,
+                            sdpMLineIndex=sdpMLineIndex
+                        )
+                        
+                        # 添加到对等连接
+                        await pc.addIceCandidate(ice)
+                        logger.info(f"添加ICE候选者成功 [客户端: {client_id}]")
+                    else:
+                        logger.error(f"无法解析候选者字符串: {candidate}")
+                        # 尝试使用内部方法
+                        pc._addRemoteIceCandidate(
+                            sdpMid=sdpMid,
+                            sdpMLineIndex=sdpMLineIndex,
+                            candidate=candidate
+                        )
+                        logger.info(f"使用备用方法添加ICE候选者成功 [客户端: {client_id}]")
                 except Exception as e:
-                    logger.error(f"尝试所有方法均失败: {e}")
+                    logger.error(f"处理ICE候选者时出错: {e}")
                     logger.error(f"原始候选者数据: {candidate_data}")
-                logger.info(f"添加ICE候选者成功 [客户端: {client_id}]")
+                    # 尝试最后的方法 - 重新触发ICE收集
+                    try:
+                        await pc.setLocalDescription(await pc.createAnswer())
+                        logger.info(f"重新触发了本地ICE收集过程 [客户端: {client_id}]")
+                    except Exception as answer_err:
+                        logger.error(f"重新触发ICE收集失败: {answer_err}")
+           
             else:
                 logger.warning(f"空的ICE候选者 [客户端: {client_id}]: {candidate_data}")
                 
@@ -494,6 +533,46 @@ class ConnectionManager:
             
         logger.info(f"已关闭客户端 {client_id} 的连接")
     
+    async def _retry_send_answer(self, client_id, max_retries=10, retry_interval=1.0):
+        """
+        尝试多次发送Answer直到成功
+        
+        Args:
+            client_id: 客户端ID
+            max_retries: 最大重试次数
+            retry_interval: 重试间隔(秒)
+        """
+        if client_id not in self.webrtc_connections:
+            logger.error(f"WebRTCConnection对象不存在 [客户端: {client_id}]")
+            return
+            
+        conn = self.webrtc_connections[client_id]
+        if not hasattr(conn, 'pending_answer') or conn.pending_answer is None:
+            logger.error(f"没有待发送的Answer [客户端: {client_id}]")
+            return
+            
+        retries = 0
+        while retries < max_retries:
+            # 检查WebSocket连接
+            if conn.websocket and hasattr(conn.websocket, 'open') and conn.websocket.open:
+                try:
+                    # 发送Answer
+                    await conn.websocket.send(json.dumps(conn.pending_answer))
+                    logger.info(f"重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
+                    
+                    # 清除待发送的Answer
+                    conn.pending_answer = None
+                    return True
+                except Exception as e:
+                    logger.error(f"重试发送Answer失败 [客户端: {client_id}, 尝试次数: {retries+1}]: {e}")
+            
+            # 如果发送失败，等待后重试
+            await asyncio.sleep(retry_interval)
+            retries += 1
+            
+        logger.error(f"多次尝试发送Answer均失败 [客户端: {client_id}, 最大尝试次数: {max_retries}]")
+        return False
+        
     async def close_all_connections(self):
         """关闭所有连接"""
         logger.info("关闭所有WebRTC连接...")
