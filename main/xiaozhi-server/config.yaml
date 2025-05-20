@@ -595,3 +595,15 @@ TTS:
       # Authorization: Bearer xxxx
     format: wav # 接口返回的音频格式
     output_dir: tmp/
+
+# #####################################################################################
+# ################################WebRTC相关配置########################################
+
+webrtc:
+  enabled: true
+  signaling_path: "/ws/signaling"
+  port: 8082
+  replace_opus: true
+  # 可以留空或使用最少的STUN服务器
+  stun_servers: []
+  turn_servers: []

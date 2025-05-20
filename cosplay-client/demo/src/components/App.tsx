@@ -61,7 +61,7 @@ const App: React.FC = () => {
       </footer>
 
       <div className="app-info">
-        <p>已连接到: {isConnected ? 'ws://localhost:8001/xiaozhi/v1/' : '未连接'}</p>
+        <p>已连接到: {isConnected ? 'ws://localhost:8000/xiaozhi/v1/' : '未连接'}</p>
         <p>
           <small>
             {isConnected ? '请尝试录音或发送文本消息与服务器交互' : '请先连接到服务器'}

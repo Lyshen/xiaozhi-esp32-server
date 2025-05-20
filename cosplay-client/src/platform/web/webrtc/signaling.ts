@@ -32,6 +32,7 @@ export class SignalingClient {
     return new Promise((resolve, reject) => {
       try {
         // 创建WebSocket连接
+        console.log(`SignalingClient: 正在尝试连接到信令服务器 URL: ${this.url}`);
         this.webSocket = new WebSocket(this.url);
 
         // 连接建立时
@@ -107,10 +108,12 @@ export class SignalingClient {
   public send(message: SignalingMessage): boolean {
     if (!this.connected || !this.webSocket) {
       console.error('SignalingClient: Cannot send message, not connected');
+      console.error(`SignalingClient: Connection URL: ${this.url}, Connected status: ${this.connected}`);
       return false;
     }
 
     try {
+      console.log(`SignalingClient: Sending message to ${this.url} (WebSocket readyState: ${this.webSocket.readyState})`);
       this.webSocket.send(JSON.stringify(message));
       return true;
     } catch (error) {

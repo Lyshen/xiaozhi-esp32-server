@@ -51,7 +51,7 @@ export function useCosplayClient({
           frameDuration: 20, // 使用更短的帧长度以减少延迟
           // WebRTC相关配置 - 明确指定为true
           useWebRTC: true, // 启用WebRTC
-          webrtcSignalingUrl: 'ws://localhost:8082/ws/signaling', // 修正的信令服务器地址
+          webrtcSignalingUrl: 'ws://localhost:8082/ws/signaling', // 改回使用localhost，因为可能8082端口映射到本地
           echoCancellation: true, // 启用回声消除
           noiseSuppression: true, // 启用噪声抑制
           autoGainControl: true, // 启用自动增益控制

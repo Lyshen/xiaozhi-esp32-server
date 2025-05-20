@@ -352,11 +352,9 @@ export class MediaManager {
     console.log('[XIAOZHI-CLIENT] 开始初始化WebRTC连接');
     
     // 创建RTC对等连接
+    // 不使用外部STUN服务器，仅使用直连模式
     this.peerConnection = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
+      iceServers: []
     });
 
     // 监控ICE连接状态变化

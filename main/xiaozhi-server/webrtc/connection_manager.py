@@ -259,13 +259,13 @@ class ConnectionManager:
             import traceback
             logger.error(f"堆栈跟踪: {traceback.format_exc()}")
     
-    async def handle_ice_candidate(self, client_id: str, candidate_data: dict):
+    async def handle_ice_candidate(self, client_id: str, candidate_data):
         """
         处理ICE候选者
         
         Args:
             client_id: 客户端ID
-            candidate_data: ICE候选者数据
+            candidate_data: ICE候选者数据，可以是字典或字符串
         """
         # 获取对应的PeerConnection
         pc = self.peer_connections.get(client_id)
@@ -280,10 +280,49 @@ class ConnectionManager:
             
         # 从候选者数据中提取信息
         try:
-            ice_candidate = candidate_data.get("candidate", {})
-            candidate = ice_candidate.get("candidate", "")
-            sdpMid = ice_candidate.get("sdpMid", "")
-            sdpMLineIndex = ice_candidate.get("sdpMLineIndex", 0)
+            # 处理不同格式的候选者数据
+            candidate = ""
+            sdpMid = ""
+            sdpMLineIndex = 0
+            
+            # 如果是字符串格式（客户端直接发送candidate字符串）
+            if isinstance(candidate_data, str):
+                logger.info(f"收到字符串格式的ICE候选者 [客户端: {client_id}]")
+                try:
+                    # 尝试解析JSON字符串
+                    json_data = json.loads(candidate_data)
+                    if isinstance(json_data, dict):
+                        if "candidate" in json_data:
+                            ice_candidate = json_data
+                            candidate = ice_candidate.get("candidate", "")
+                            sdpMid = ice_candidate.get("sdpMid", "")
+                            sdpMLineIndex = ice_candidate.get("sdpMLineIndex", 0)
+                        else:
+                            candidate = json_data.get("candidate", "")
+                            sdpMid = json_data.get("sdpMid", "")
+                            sdpMLineIndex = json_data.get("sdpMLineIndex", 0)
+                    elif isinstance(json_data, str):
+                        # 如果解析出的还是字符串，则认为直接是candidate值
+                        candidate = json_data
+                except json.JSONDecodeError:
+                    # 不是JSON格式，直接使用字符串作为candidate值
+                    candidate = candidate_data
+            # 如果是字典格式（标准格式）
+            elif isinstance(candidate_data, dict):
+                if "candidate" in candidate_data:
+                    if isinstance(candidate_data["candidate"], dict):
+                        ice_candidate = candidate_data.get("candidate", {})
+                        candidate = ice_candidate.get("candidate", "")
+                        sdpMid = ice_candidate.get("sdpMid", "")
+                        sdpMLineIndex = ice_candidate.get("sdpMLineIndex", 0)
+                    else:  # candidate字段直接是字符串
+                        candidate = candidate_data.get("candidate", "")
+                        sdpMid = candidate_data.get("sdpMid", "")
+                        sdpMLineIndex = candidate_data.get("sdpMLineIndex", 0)
+                else:  # candidate_data本身就包含了所需字段
+                    candidate = candidate_data.get("candidate", "")
+                    sdpMid = candidate_data.get("sdpMid", "")
+                    sdpMLineIndex = candidate_data.get("sdpMLineIndex", 0)
             
             if candidate:
                 # 创建RTCIceCandidate并添加到PeerConnection
@@ -294,12 +333,13 @@ class ConnectionManager:
                 })
                 logger.info(f"添加ICE候选者成功 [客户端: {client_id}]")
             else:
-                logger.warning(f"空的ICE候选者 [客户端: {client_id}]")
+                logger.warning(f"空的ICE候选者 [客户端: {client_id}]: {candidate_data}")
                 
         except Exception as e:
             logger.error(f"处理ICE候选者时出错 [客户端: {client_id}]: {e}")
             import traceback
             logger.error(f"堆栈跟踪: {traceback.format_exc()}")
+            logger.error(f"原始候选者数据: {candidate_data}")
     
     async def process_audio(self, client_id, audio_data):
         """
