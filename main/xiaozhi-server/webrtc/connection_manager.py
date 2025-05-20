@@ -326,11 +326,78 @@ class ConnectionManager:
             
             if candidate:
                 # 创建RTCIceCandidate并添加到PeerConnection
-                await pc.addIceCandidate({
-                    "candidate": candidate,
-                    "sdpMid": sdpMid,
-                    "sdpMLineIndex": sdpMLineIndex
-                })
+                from aiortc import RTCIceCandidate
+                
+                # 解析candidate字符串中的必要参数
+                try:
+                    # 将字典传递给addIceCandidate方法
+                    # aiortc内部会处理这个字典
+                    await pc.addIceCandidate({
+                        "candidate": candidate,
+                        "sdpMid": sdpMid,
+                        "sdpMLineIndex": sdpMLineIndex
+                    })
+                    logger.info(f"添加ICE候选者成功(字典方式) [客户端: {client_id}]")
+                except Exception as dict_err:
+                    logger.warning(f"使用字典添加候选者失败: {dict_err}")
+                    
+                    try:
+                        # 如果字典方式失败，尝试使用RTCIceCandidate对象
+                        # 解析候选者字符串来提取所需的组件
+                        if not candidate.startswith('candidate:'):
+                            candidate = 'candidate:' + candidate
+                            
+                        # 初步解析从候选者字符串中提取组件
+                        parts = candidate.split(' ')
+                        if len(parts) >= 10 and parts[0].startswith('candidate:'):
+                            # 這裡假設格式為: candidate:foundation component protocol priority ip port type ... 
+                            foundation = parts[0].replace('candidate:', '')
+                            component = int(parts[1])
+                            protocol = parts[2]
+                            priority = int(parts[3])
+                            ip = parts[4]
+                            port = int(parts[5])
+                            type = parts[7]
+                            
+                            # 创建RTCIceCandidate对象
+                            ice = RTCIceCandidate(
+                                foundation=foundation,
+                                component=component,
+                                protocol=protocol,
+                                priority=priority,
+                                ip=ip,
+                                port=port,
+                                type=type,
+                                sdpMid=sdpMid,
+                                sdpMLineIndex=sdpMLineIndex
+                            )
+                            
+                            # 添加到对等连接
+                            await pc.addIceCandidate(ice)
+                            logger.info(f"添加ICE候选者成功(对象方式) [客户端: {client_id}]")
+                        else:
+                            logger.error(f"无法解析候选者字符串: {candidate}")
+                    except Exception as obj_err:
+                        logger.error(f"使用对象添加候选者失败: {obj_err}")
+                        # 最后一次尝试 - 直接将原始字符串传递给底层API
+                        logger.warning("尝试最后的方法...")
+                        # 使用RTCPeerConnection内部方法
+                        try:
+                            pc._addRemoteIceCandidate(
+                                sdpMid=sdpMid,
+                                sdpMLineIndex=sdpMLineIndex,
+                                candidate=candidate
+                            )
+                            logger.info(f"使用内部API添加候选者成功 [客户端: {client_id}]")
+                        except Exception as internal_err:
+                            logger.error(f"所有添加候选者方法均失败: {internal_err}")
+                            logger.error(f"原始候选者数据: {candidate_data}")
+                            # 最后的尝试 - 重新触发ICE收集
+                            await pc.setLocalDescription(await pc.createAnswer())
+                            logger.info("重新触发了本地ICE收集过程")
+                except Exception as e:
+                    logger.error(f"尝试所有方法均失败: {e}")
+                    logger.error(f"原始候选者数据: {candidate_data}")
                 logger.info(f"添加ICE候选者成功 [客户端: {client_id}]")
             else:
                 logger.warning(f"空的ICE候选者 [客户端: {client_id}]: {candidate_data}")
