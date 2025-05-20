@@ -59,27 +59,12 @@ export class WebRTCAudioConnection {
       // 设置连接事件监听
       this.setupPeerConnectionListeners();
       
-      // 添加音频transceiver并优先使用Opus编解码器
-      const audioTransceiver = this.peerConnection.addTransceiver('audio', {
+      // 添加音频transceiver - WebRTC会自动使用最佳的编解码器
+      this.peerConnection.addTransceiver('audio', {
         direction: 'sendrecv'
       });
       
-      // 明确设置Opus为首选编解码器
-      if (RTCRtpSender.getCapabilities) {  // 检查浏览器支持
-        const capabilities = RTCRtpSender.getCapabilities('audio');
-        // 确保capabilities不为null
-        if (capabilities && capabilities.codecs) {
-          // 找到Opus编解码器并优先使用它
-          const opusCodec = capabilities.codecs.find(codec => 
-            codec.mimeType.toLowerCase() === 'audio/opus');
-          
-          if (opusCodec) {
-            audioTransceiver.setCodecPreferences([opusCodec, ...capabilities.codecs.filter(c => 
-              c.mimeType.toLowerCase() !== 'audio/opus')]);
-            console.log('[XIAOZHI-CLIENT] 已将Opus设置为首选音频编解码器', opusCodec);
-          }
-        }
-      }
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 已创建音频通道`);
 
       // 获取本地媒体流
       const stream = await this.mediaManager.getLocalStream({
@@ -407,7 +392,7 @@ export class WebRTCAudioConnection {
   }
   
   /**
-   * 设置本地描述并捕获编解码器信息
+   * 设置本地描述
    * @param description 本地描述
    */
   private async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
@@ -415,52 +400,10 @@ export class WebRTCAudioConnection {
 
     try {
       await this.peerConnection.setLocalDescription(description);
-      
-      // 保存编解码器信息，全局变量以便于日志记录
-      this.saveCodecInfo(description.sdp);
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 已设置本地描述`); 
     } catch (error) {
-      console.error('WebRTCAudioConnection: Error setting local description:', error);
+      console.error(`WebRTCAudioConnection[${this.instanceId}]: 设置本地描述失败:`, error);
       throw error;
-    }
-  }
-  
-  /**
-   * 从 SDP 中提取编解码器信息并保存
-   * @param sdp SDP描述
-   */
-  private saveCodecInfo(sdp?: string): void {
-    if (!sdp) return;
-
-    try {
-      // 解析SDP以获取编解码器信息
-      const audioCodecRegex = /a=rtpmap:(\d+) ([\w\-/]+)/g;
-      const codecMatches = [...sdp.matchAll(audioCodecRegex)];
-      
-      // 查找Opus编解码器
-      const opusMatch = codecMatches.find(match => match[2].toLowerCase().includes('opus'));
-      
-      if (opusMatch) {
-        const codecInfo = {
-          payloadType: opusMatch[1],
-          name: opusMatch[2],
-          negotiated: true,
-        };
-        
-        // 将编解码器信息存储在全局变量中
-        (window as any).XIAOZHI_CODEC_INFO = codecInfo;
-        
-        // 将配置信息也存储在全局变量中
-        (window as any).XIAOZHI_CONFIG = {
-          audioConfig: this.config,
-        };
-        
-        console.log('[XIAOZHI-CLIENT] 成功协商的编解码器:', codecInfo);
-      } else {
-        console.warn('[XIAOZHI-CLIENT] 在SDP中未找到Opus编解码器');
-        (window as any).XIAOZHI_CODEC_INFO = { negotiated: false, reason: 'No Opus codec found in SDP' };
-      }
-    } catch (error) {
-      console.error('[XIAOZHI-CLIENT] 解析编解码器信息时出错:', error);
     }
   }
 
