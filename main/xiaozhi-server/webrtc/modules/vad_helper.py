@@ -88,9 +88,19 @@ class VADHelper:
                 logger.warning(f"[VAD-DEBUG] 无法获取连接音频配置: {conn_err}")
             
             # 调用VAD判断是否有语音
-            #logger.warning(f"[VAD-DEBUG] 开始调用VAD识别")
+            # 创建计数器属性，如果不存在
+            if not hasattr(self, 'vad_log_counter'):
+                self.vad_log_counter = 0
+            
+            # 每100次输出一次日志
+            self.vad_log_counter = (self.vad_log_counter + 1) % 100
+            if self.vad_log_counter == 0:
+                logger.warning(f"[VAD-DEBUG] 开始调用VAD识别")
+                
             is_speech, prob = self.process(audio)
-            #logger.warning(f"[VAD-DEBUG] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
+            
+            if self.vad_log_counter == 0:
+                logger.warning(f"[VAD-DEBUG] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
             
             # 更新连接状态
             if is_speech:
@@ -160,7 +170,16 @@ class VADHelper:
                 
             # VAD处理 - 使用原始接口，不添加额外参数
             is_speech, prob = self.vad.is_speech(audio_data)
-            #logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
+            
+            # 创建计数器属性，如果不存在
+            if not hasattr(self, 'process_log_counter'):
+                self.process_log_counter = 0
+            
+            # 每100次输出一次日志
+            self.process_log_counter = (self.process_log_counter + 1) % 100
+            if self.process_log_counter == 0:
+                logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
+                
             return is_speech, prob
         except Exception as e:
             logger.error(f"[VAD-DEBUG] VAD处理错误: {str(e)}")

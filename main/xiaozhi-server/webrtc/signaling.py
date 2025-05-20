@@ -150,8 +150,14 @@ class SignalingHandler:
                 await ws.send_json({"type": "closed"})
             elif normalized_type == 'ping':
                 # 立即响应ping消息以保持心跳
+                # 使用高优先级处理，确保心跳不被阻塞
                 logger.debug(f"收到ping消息 [客户端: {client_id}], 立即响应pong")
-                await ws.send_json({"type": "pong", "timestamp": message.get("timestamp", int(time.time()))})
+                try:
+                    # 使用非阻塞方式发送心跳响应
+                    await asyncio.shield(ws.send_json({"type": "pong", "timestamp": message.get("timestamp", int(time.time()))}))
+                    logger.debug(f"pong响应已发送 [客户端: {client_id}]")
+                except Exception as e:
+                    logger.error(f"pong响应发送失败 [客户端: {client_id}]: {e}")
             else:
                 logger.warning(f"未知的信令消息类型 [客户端: {client_id}]: {normalized_type}")
                 await ws.send_json({"type": "error", "message": f"未支持的消息类型: {normalized_type}"})
@@ -176,6 +182,42 @@ class SignalingHandler:
         
         # 如果需要处理二进制数据，可在此实现
         # 例如，可能是音频数据或其他二进制协议数据
+        
+    async def is_websocket_open(self, ws):
+        """
+        检查WebSocket是否打开并可用
+        
+        Args:
+            ws: WebSocket连接对象
+            
+        Returns:
+            bool: WebSocket是否可用
+        """
+        if ws is None:
+            return False
+            
+        # 检查常见的WebSocket属性
+        if hasattr(ws, 'open'):
+            return ws.open
+        if hasattr(ws, 'closed'):
+            return not ws.closed
+        if hasattr(ws, 'readyState'):
+            # 浏览器WebSocket的readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+            return ws.readyState == 1
+            
+        # 如果没有标准属性，尝试检查其他可能的状态指示器
+        for attr in ['connected', 'is_connected', 'active', 'is_active']:
+            if hasattr(ws, attr) and callable(getattr(ws, attr)):
+                try:
+                    return getattr(ws, attr)()
+                except:
+                    pass
+            elif hasattr(ws, attr):
+                return bool(getattr(ws, attr))
+                
+        # 默认假设它是打开的，除非有明确证据表明它是关闭的
+        logger.warning(f"无法确定WebSocket状态，假设它是打开的")
+        return True
         
     async def broadcast(self, message, exclude_client=None):
         """

@@ -140,44 +140,94 @@ class ConnectionManager:
     
     def is_websocket_open(self, ws):
         """
-        检查WebSocket是否处于打开状态
+        检查WebSocket是否打开并可用
         
         Args:
-            ws: WebSocket对象
+            ws: WebSocket连接对象
             
         Returns:
-            bool: WebSocket是否打开
+            bool: WebSocket是否可用
         """
-        return ws is not None and hasattr(ws, 'open') and ws.open
+        if ws is None:
+            return False
+            
+        # 检查常见的WebSocket属性
+        if hasattr(ws, 'open'):
+            return ws.open
+        if hasattr(ws, 'closed'):
+            return not ws.closed
+        if hasattr(ws, 'readyState'):
+            # 浏览器WebSocket的readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+            return ws.readyState == 1
+            
+        # 如果没有标准属性，尝试检查其他可能的状态指示器
+        for attr in ['connected', 'is_connected', 'active', 'is_active']:
+            if hasattr(ws, attr) and callable(getattr(ws, attr)):
+                try:
+                    return getattr(ws, attr)()
+                except:
+                    pass
+            elif hasattr(ws, attr):
+                return bool(getattr(ws, attr))
+                
+        # 默认假设它是打开的，除非有明确证据表明它是关闭的
+        logger.warning(f"无法确定WebSocket状态，假设它是打开的")
+        return True
     
-    async def handle_offer(self, client_id, offer_data, websocket=None):
+    async def associate_websocket(self, client_id, websocket):
         """
-        处理客户端发送的Offer
+        关联WebSocket到WebRTC连接
         
         Args:
             client_id: 客户端ID
-            offer_data: Offer数据
-            websocket: WebSocket连接
+            websocket: WebSocket连接对象
         """
-        logger.info(f"接收Offer [客户端: {client_id}]")
+        if client_id not in self.webrtc_connections:
+            self.webrtc_connections[client_id] = WebRTCConnection(client_id=client_id)
+            logger.info(f"创建了新的WebRTCConnection [客户端: {client_id}]")
         
-        # 1. 提取SDP信息
+        self.webrtc_connections[client_id].websocket = websocket
+        logger.info(f"成功关联WebSocket到WebRTCConnection [客户端: {client_id}]")
+    
+    async def handle_offer(self, client_id, offer_data, websocket=None):
+        """
+        处理来自客户端的Offer
+        
+        参数:
+        client_id: 客户端ID
+        offer_data: Offer数据
+        websocket: WebSocket连接对象（可选）
+        """
         try:
-            # 处理不同格式的offer_data
-            if isinstance(offer_data, dict):
-                # 如果offer_data是字典，尝试获取sdp字段
-                offer_sdp = offer_data.get("sdp", {})
-                if isinstance(offer_sdp, dict):
-                    # 如果offset_sdp是字典，直接获取type和sdp
-                    type_ = offer_sdp.get("type")
-                    sdp = offer_sdp.get("sdp")
-                elif isinstance(offer_sdp, str):
-                    # 如果offset_sdp是字符串，将其作为sdp值，type设为"offer"
-                    type_ = "offer"
-                    sdp = offer_sdp
+            logger.info(f"处理Offer [客户端: {client_id}]")
+            
+            # 首先尝试关联WebSocket，确保后续操作可以使用它
+            if websocket:
+                # 检查WebSocket是否可用
+                if self.is_websocket_open(websocket):
+                    # 立即关联WebSocket到连接
+                    await self.associate_websocket(client_id, websocket)
+                    logger.info(f"在处理Offer前已关联WebSocket [客户端: {client_id}]")
                 else:
-                    logger.error(f"无法解析的offer_sdp格式: {type(offer_sdp)} [客户端: {client_id}]")
-                    return
+                    logger.warning(f"传入的WebSocket不可用，无法关联 [客户端: {client_id}]")
+            else:
+                logger.warning(f"无可用的WebSocket连接传入handle_offer [客户端: {client_id}]")
+            
+            # 1. 解析offer_data
+            type_ = None
+            sdp = None
+            
+            if isinstance(offer_data, dict):
+                # 如果offer_data是字典，尝试获取type和sdp字段
+                if 'type' in offer_data and 'sdp' in offer_data:
+                    type_ = offer_data['type']
+                    sdp = offer_data['sdp']
+                elif 'sdp' in offer_data and isinstance(offer_data['sdp'], dict):
+                    # 处理嵌套的sdp对象
+                    sdp_obj = offer_data['sdp']
+                    if 'type' in sdp_obj and 'sdp' in sdp_obj:
+                        type_ = sdp_obj['type']
+                        sdp = sdp_obj['sdp']
             elif isinstance(offer_data, str):
                 # 如果offer_data是字符串，直接将其作为sdp值，type设为"offer"
                 type_ = "offer"
@@ -216,16 +266,39 @@ class ConnectionManager:
             }
             
             logger.info(f"准备发送Answer [客户端: {client_id}]")
-            logger.debug(f"Answer SDP内容 [客户端: {client_id}]: {pc.localDescription.sdp[:100]}...")
+            
+            # 发送CONNECTED消息，告知客户端服务器已准备好
+            connected_message = {
+                "type": "connected",
+                "payload": {
+                    "client_id": client_id,
+                    "timestamp": int(time.time())
+                }
+            }
             
             sent_answer = False
             
             # 尝试方法1: 使用提供的websocket
             if websocket:
-                logger.info(f"WebSocket检查 [客户端: {client_id}]: 类型={type(websocket)}, 方法={dir(websocket)[:5]}...")
+                logger.info(f"WebSocket检查 [客户端: {client_id}]: 类型={type(websocket)}, 属性={dir(websocket)[:5]}...")
+                
+                # 输出更多详细的WebSocket状态信息
+                ws_status = "unknown"
+                if hasattr(websocket, 'open'):
+                    ws_status = f"open={websocket.open}"
+                elif hasattr(websocket, 'closed'):
+                    ws_status = f"closed={websocket.closed}"
+                elif hasattr(websocket, 'readyState'):
+                    ws_status = f"readyState={websocket.readyState}"
+                logger.info(f"WebSocket状态详情 [客户端: {client_id}]: {ws_status}")
                 
                 if self.is_websocket_open(websocket):
                     try:
+                        # 先发送CONNECTED消息
+                        logger.info(f"发送CONNECTED消息 [客户端: {client_id}]")
+                        await websocket.send(json.dumps(connected_message))
+                        
+                        # 然后发送Answer
                         logger.info(f"准备通过传入的WebSocket发送Answer [客户端: {client_id}]")
                         await websocket.send(json.dumps(answer_data))
                         logger.info(f"使用传入的WebSocket发送Answer成功 [客户端: {client_id}]")
@@ -245,6 +318,11 @@ class ConnectionManager:
                     
                     if self.is_websocket_open(conn.websocket):
                         try:
+                            # 先发送CONNECTED消息
+                            logger.info(f"发送CONNECTED消息 [客户端: {client_id}]")
+                            await conn.websocket.send(json.dumps(connected_message))
+                            
+                            # 然后发送Answer
                             logger.info(f"准备通过已关联的WebSocket发送Answer [客户端: {client_id}]")
                             await conn.websocket.send(json.dumps(answer_data))
                             logger.info(f"使用关联的WebSocket发送Answer成功 [客户端: {client_id}]")
@@ -296,22 +374,15 @@ class ConnectionManager:
                 
                 # 将Answer存储到连接对象中
                 conn.pending_answer = answer_data
-                logger.info(f"将Answer存储到连接对象 [客户端: {client_id}]")
-                
-                # 关联对等连接
-                conn.peer_connection = pc
-                
-                # 如果仍然没有发送成功，通过守护线程重试
-                if not sent_answer:
-                    logger.warning(f"无法立即发送Answer，将启动重试进程 [客户端: {client_id}]")
-                    logger.info(f"Answer待发送数据: {answer_data['type']}, SDP类型: {answer_data['sdp']['type']}")
+                logger.info(f"将CONNECTED消息和Answer存储到连接对象 [客户端: {client_id}]")
+                logger.info(f"Answer待发送数据: {answer_data['type']}, SDP类型: {answer_data['sdp']['type']}")
                     
-                    # 检查是否有可用的WebSocket连接用于重试
-                    if self.is_websocket_open(conn.websocket):
-                        logger.info(f"WebSocket连接可用，启动重试任务 [客户端: {client_id}]")
-                        asyncio.create_task(self._retry_send_answer(client_id))
-                    else:
-                        logger.warning(f"没有可用的WebSocket连接用于重试 [客户端: {client_id}]，将等待WebSocket重连")
+                # 检查是否有可用的WebSocket连接用于重试
+                if self.is_websocket_open(conn.websocket):
+                    logger.info(f"WebSocket连接可用，启动重试任务 [客户端: {client_id}]")
+                    asyncio.create_task(self._retry_send_answer(client_id))
+                else:
+                    logger.warning(f"没有可用的WebSocket连接用于重试 [客户端: {client_id}]，将等待WebSocket重连")
             
             # 8. 如果有待处理的ICE候选者，添加它们
             if client_id in self.pending_candidates:
@@ -641,6 +712,7 @@ class ConnectionManager:
         conn = self.webrtc_connections[client_id]
         logger.info(f"[重试机制] 获取到WebRTCConnection对象 [客户端: {client_id}, websocket存在: {conn.websocket is not None}]")
         
+        # 检查是否有待发送的Answer
         if not hasattr(conn, 'pending_answer') or conn.pending_answer is None:
             logger.error(f"[重试机制] 没有待发送的Answer [客户端: {client_id}]")
             return
@@ -649,6 +721,17 @@ class ConnectionManager:
             sdp_info = conn.pending_answer.get('sdp', {})
             sdp_type = sdp_info.get('type', 'unknown') if isinstance(sdp_info, dict) else 'unknown'
             logger.info(f"[重试机制] 待发送Answer信息 [客户端: {client_id}, 类型: {answer_type}, SDP类型: {sdp_type}]")
+        
+        # 创建CONNECTED消息，如果不存在
+        if not hasattr(conn, 'pending_connected_message') or conn.pending_connected_message is None:
+            conn.pending_connected_message = {
+                "type": "connected",
+                "payload": {
+                    "client_id": client_id,
+                    "timestamp": int(time.time())
+                }
+            }
+            logger.info(f"[重试机制] 创建CONNECTED消息 [客户端: {client_id}]")
             
         retries = 0
         while retries < max_retries:
@@ -661,7 +744,21 @@ class ConnectionManager:
                 
                 if self.is_websocket_open(conn.websocket):
                     try:
-                        # 尝试发送Answer的不同方法
+                        # 先发送CONNECTED消息
+                        if hasattr(conn, 'pending_connected_message') and conn.pending_connected_message:
+                            connected_json = json.dumps(conn.pending_connected_message)
+                            logger.info(f"[重试机制] 准备发送CONNECTED消息 [客户端: {client_id}]")
+                            
+                            if hasattr(conn.websocket, 'send_json'):
+                                await conn.websocket.send_json(conn.pending_connected_message)
+                            else:
+                                await conn.websocket.send(connected_json)
+                                
+                            logger.info(f"[重试机制] 发送CONNECTED消息成功 [客户端: {client_id}]")
+                            # 等待一小段时间，确保客户端收到CONNECTED消息
+                            await asyncio.sleep(0.2)
+                        
+                        # 然后发送Answer
                         answer_json = json.dumps(conn.pending_answer)
                         logger.info(f"[重试机制] 准备发送Answer [客户端: {client_id}, 数据长度: {len(answer_json)}]")
                         
@@ -674,7 +771,8 @@ class ConnectionManager:
                             
                         logger.info(f"[重试机制] 重试发送Answer成功 [客户端: {client_id}, 尝试次数: {retries+1}]")
                         
-                        # 清除待发送的Answer
+                        # 清除待发送的消息
+                        conn.pending_connected_message = None
                         conn.pending_answer = None
                         return True
                     except Exception as e:

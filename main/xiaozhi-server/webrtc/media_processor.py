@@ -280,9 +280,17 @@ class AudioProcessor:
             frame: 音频帧
         """
         try:
+            # 创建计数器属性，如果不存在
+            if not hasattr(self, 'audio_log_counter'):
+                self.audio_log_counter = 0
+            
+            # 每100次输出一次日志
+            self.audio_log_counter = (self.audio_log_counter + 1) % 100
+            
             # 输出谁试信息 - 正确访问AV音频格式属性
             # PyAV中是通过layout访问通道信息
-            #logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
+            if self.audio_log_counter == 0:
+                logger.warning(f"[XIAOZHI-SERVER] 处理音频帧, 客户端ID: {self.client_id}, 帧采样率: {frame.sample_rate}, 格式: {frame.format.name}, 通道布局: {frame.layout.name}")
             
             # 尝试获取WebRTC连接管理器
             connection_manager = None
@@ -290,7 +298,8 @@ class AudioProcessor:
             # 方式1: 直接从 app_context 获取
             if self.app_context and hasattr(self.app_context, 'webrtc_manager'):
                 connection_manager = self.app_context.webrtc_manager
-                #logger.info(f"[XIAOZHI-SERVER] 从 app_context.webrtc_manager 获取到WebRTC连接管理器")
+                if self.audio_log_counter == 0:
+                    logger.info(f"[XIAOZHI-SERVER] 从 app_context.webrtc_manager 获取到WebRTC连接管理器")
             
             # 方式2: 通过 webrtc_module 获取
             elif self.app_context and hasattr(self.app_context, 'webrtc_module'):
@@ -298,11 +307,13 @@ class AudioProcessor:
                 # 检查是否直接有connection_manager属性
                 if hasattr(webrtc_module, 'connection_manager'):
                     connection_manager = webrtc_module.connection_manager
-                    #logger.info(f"[XIAOZHI-SERVER] 从 webrtc_module.connection_manager 获取到WebRTC连接管理器")
+                    if self.audio_log_counter == 0:
+                        logger.info(f"[XIAOZHI-SERVER] 从 webrtc_module.connection_manager 获取到WebRTC连接管理器")
                 # 检查是否有get_connection_manager方法
                 elif hasattr(webrtc_module, 'get_connection_manager'):
                     connection_manager = webrtc_module.get_connection_manager()
-                    #logger.info(f"[XIAOZHI-SERVER] 通过 webrtc_module.get_connection_manager() 获取到WebRTC连接管理器")
+                    if self.audio_log_counter == 0:
+                        logger.info(f"[XIAOZHI-SERVER] 通过 webrtc_module.get_connection_manager() 获取到WebRTC连接管理器")
             
             # 方式3: 尝试从全局模块导入
             if not connection_manager:
@@ -323,30 +334,35 @@ class AudioProcessor:
                         for module_name, module in sys.modules.items():
                             if hasattr(module, 'connection_manager') and isinstance(module.connection_manager, ConnectionManager):
                                 connection_manager = module.connection_manager
-                                #logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
+                                if self.audio_log_counter == 0:
+                                    logger.warning(f"[XIAOZHI-SERVER] 从模块 {module_name} 找到全局ConnectionManager实例")
                                 break
                 except Exception as e:
                     logger.warning(f"[XIAOZHI-SERVER] 无法导入ConnectionManager: {str(e)}")
             
             # 如果找到连接管理器，则调用process_audio_frame方法
             if connection_manager:
-                logger.warning(f"[XIAOZHI-SERVER] 成功获取到WebRTC连接管理器，传递音频帧")
+                if self.audio_log_counter == 0:
+                    logger.warning(f"[XIAOZHI-SERVER] 成功获取到WebRTC连接管理器，传递音频帧")
                 await connection_manager.process_audio_frame(frame, self.client_id)
             else:
                 # 如果没有WebRTC管理器，尝试使用原有音频处理
-                logger.warning(f"[XIAOZHI-SERVER] WebRTC管理器不可用，尝试使用原有音频处理逻辑")
+                if self.audio_log_counter == 0:
+                    logger.warning(f"[XIAOZHI-SERVER] WebRTC管理器不可用，尝试使用原有音频处理逻辑")
                 
                 # 转换PyAV音频帧为字节数据
                 frame_bytes = frame.to_ndarray().tobytes()
                 
                 # 直接使用我们自己的处理方法来处理音频帧
-                logger.warning(f"[XIAOZHI-SERVER] 使用内部音频处理逻辑")
+                if self.audio_log_counter == 0:
+                    logger.warning(f"[XIAOZHI-SERVER] 使用内部音频处理逻辑")
                 await self.process_audio_data(frame_bytes)
                 
                 # 如果app_context有单独的audio_processor，也可以尝试调用
                 if self.app_context and hasattr(self.app_context, 'audio_processor') and \
                    hasattr(self.app_context.audio_processor, 'process_audio'):
-                    logger.warning(f"[XIAOZHI-SERVER] 同时调用app_context的音频处理逻辑")
+                    if self.audio_log_counter == 0:
+                        logger.warning(f"[XIAOZHI-SERVER] 同时调用app_context的音频处理逻辑")
                     try:
                         await self.app_context.audio_processor.process_audio(
                             self.client_id,
