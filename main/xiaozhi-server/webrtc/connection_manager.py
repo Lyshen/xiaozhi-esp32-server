@@ -83,10 +83,28 @@ class ConnectionManager:
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
             logger.info(f"ICE连接状态变化 [客户端: {client_id}]: {pc.iceConnectionState}")
-            if pc.iceConnectionState == "connected":
+            if pc.iceConnectionState == "checking":
+                logger.info(f"WebRTC: ICE连接正在检查候选者 [客户端: {client_id}]")
+            elif pc.iceConnectionState == "connected":
                 logger.info(f"WebRTC: ICE连接已成功建立 [客户端: {client_id}]")
+                # 获取选中的ICE候选者信息
+                try:
+                    stats = await pc.getStats()
+                    for stat in stats.values():
+                        if stat.type == "candidate-pair" and stat.state == "succeeded":
+                            logger.info(f"WebRTC: P2P连接详情 [客户端: {client_id}] - 本地候选者类型: {stat.localCandidateType}, 远程候选者类型: {stat.remoteCandidateType}, 传输协议: {stat.protocol}")
+                except Exception as e:
+                    logger.error(f"WebRTC: 获取ICE统计信息失败 [客户端: {client_id}]: {e}")
             elif pc.iceConnectionState == "completed":
                 logger.info(f"WebRTC: ICE连接已完成并稳定 [客户端: {client_id}]")
+                # 记录连接完成时的详细信息
+                try:
+                    stats = await pc.getStats()
+                    for stat in stats.values():
+                        if stat.type == "transport":
+                            logger.info(f"WebRTC: P2P传输详情 [客户端: {client_id}] - 字节已发送: {stat.bytesSent}, 字节已接收: {stat.bytesReceived}, RTT: {stat.currentRoundTripTime if hasattr(stat, 'currentRoundTripTime') else 'N/A'}ms")
+                except Exception as e:
+                    logger.error(f"WebRTC: 获取传输统计信息失败 [客户端: {client_id}]: {e}")
             elif pc.iceConnectionState == "failed":
                 logger.info(f"WebRTC: ICE连接失败 [客户端: {client_id}]")
                 await self.handle_connection_failure(client_id)

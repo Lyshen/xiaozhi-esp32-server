@@ -88,30 +88,53 @@ class AudioFrameHandler:
             counter = self.audio_packet_counters[client_id]
             
             # 添加明确的日志 - 记录开始处理音频
-            logger.warning(f"[SERVER-AUDIO] 接收音频包 #{counter} 来自客户端 {client_id}, 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            # 减少日志输出，只在每100个包输出一次或者是第一个包
+            if counter == 1 or counter % 100 == 0:
+                logger.info(f"[P2P-DATA] 接收音频包 #{counter} 来自客户端 {client_id}, 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                # 尝试获取并记录WebRTC统计信息
+                if client_id in webrtc_connections and webrtc_connections[client_id].pc:
+                    pc = webrtc_connections[client_id].pc
+                    try:
+                        # 异步获取统计信息
+                        async def get_stats():
+                            stats = await pc.getStats()
+                            for stat in stats.values():
+                                if stat.type == "inbound-rtp" and stat.kind == "audio":
+                                    logger.info(f"[P2P-STATS] 音频接收统计 [客户端: {client_id}] - 已接收包: {stat.packetsReceived}, 丢包: {stat.packetsLost}, 总字节: {stat.bytesReceived}, 解码器实现: {stat.decoderImplementation if hasattr(stat, 'decoderImplementation') else 'unknown'}")
+                                elif stat.type == "remote-inbound-rtp" and stat.kind == "audio":
+                                    logger.info(f"[P2P-STATS] 远程音频统计 [客户端: {client_id}] - RTT: {stat.roundTripTime if hasattr(stat, 'roundTripTime') else 'N/A'}ms, 丢包率: {stat.fractionLost if hasattr(stat, 'fractionLost') else 'N/A'}")
+                        # 创建任务并运行
+                        asyncio.create_task(get_stats())
+                    except Exception as e:
+                        logger.error(f"[P2P-STATS] 获取WebRTC统计信息失败 [客户端: {client_id}]: {e}")
             
-                # 移除对frame进行深度复制的尝试，因为AudioFrame对象不支持深度复制
+            # 移除对frame进行深度复制的尝试，因为AudioFrame对象不支持深度复制
             
             # 1. 将音频帧转换为PCM格式 (用于音频分析和存储)
             audio_array = await self.convert_audio_to_pcm(frame)
             self.audio_bytes_counters[client_id] += len(audio_array)
-            logger.warning(f"[SERVER-AUDIO] 音频转换完成，数据包 #{counter}，大小: {len(audio_array)} 字节，累计: {self.audio_bytes_counters[client_id]} 字节")
             
-            # 2. 获取或创建持久化的WebRTC连接对象
+            # 2. 记录音频转换完成 - 减少日志输出
+            if counter == 1 or counter % 100 == 0:
+                logger.info(f"[P2P-DATA] 音频转换完成，数据包 #{counter}，大小: {len(audio_array)} 字节，累计: {self.audio_bytes_counters[client_id]} 字节")
+            
+            # 3. 获取或创建WebRTC连接对象
             if client_id in webrtc_connections:
                 conn = webrtc_connections[client_id]
-                logger.warning(f"[SERVER-AUDIO] 使用已有WebRTC连接对象，客户端ID: {client_id}")
+                if counter == 1:
+                    logger.info(f"[P2P-DATA] 使用已有WebRTC连接对象，客户端ID: {client_id}")
             else:
-                # 创建新的WebRTC连接对象并保存
+                # 如果还没有创建WebRTC连接对象，创建一个新的
                 from ..modules.webrtc_connection import WebRTCConnection
                 conn = WebRTCConnection(client_id)
                 webrtc_connections[client_id] = conn
-                logger.warning(f"[SERVER-AUDIO] 创建新的WebRTC连接对象，客户端ID: {client_id}")
+                logger.info(f"[P2P-DATA] 创建新的WebRTC连接对象，客户端ID: {client_id}")
             
             # 3. 将音频数据添加到ASR缓冲区
             # 在convert_audio_to_pcm已经尽可能保留了Opus格式
             conn.asr_audio.append(audio_array)
-            logger.warning(f"[SERVER-AUDIO] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+            if counter % 100 == 0:
+                logger.info(f"[P2P-DATA] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
             
             # 4. 音频包计数器
             packet_counter = self.audio_packet_counters[client_id]
@@ -196,7 +219,8 @@ class AudioFrameHandler:
                                 # 回退到PCM数据
                                 vad_result = await vad.is_vad(audio_array, builtins_conn)  # VAD检测
                                 
-                            logger.warning(f"[SERVER-AUDIO] VAD处理链路已完成，数据包 #{counter}，结果: {vad_result}")
+                            if counter % 100 == 0 or vad_result is not None:
+                                logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{counter}，结果: {vad_result}")
                         except Exception as e:
                             logger.error(f"[SERVER-AUDIO-ERROR] 处理ASR结果时发生错误: {e}")
                             logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
@@ -218,9 +242,11 @@ class AudioFrameHandler:
                         from core.handle.receiveAudioHandle import process_audio_internal
                     
                     # 调用原有VAD处理逻辑
-                    logger.warning(f"[SERVER-AUDIO] 正常VAD处理，数据包 #{packet_counter}，音频长度: {len(audio_array)} 字节")
+                    if packet_counter % 100 == 0:
+                        logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，音频长度: {len(audio_array)} 字节")
                     result = await process_audio_internal(conn, audio_array)
-                    logger.warning(f"[SERVER-AUDIO] VAD处理链路已完成，数据包 #{packet_counter}，结果: {result}")
+                    if packet_counter % 100 == 0 or result is not None:
+                        logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{packet_counter}，结果: {result}")
                 except ImportError as e:
                     logger.error(f"[SERVER-AUDIO] 无法导入VAD处理链路: {str(e)}")
             
