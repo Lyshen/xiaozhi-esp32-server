@@ -967,6 +967,7 @@ class ConnectionManager:
             return False
         
     async def process_audio_frame(self, frame, client_id):
+        logger.info(f"process_audio_frame")
         """
         处理WebRTC音频帧
         
@@ -997,12 +998,34 @@ class ConnectionManager:
         # 累计字节数
         self.audio_bytes_counters[client_id] += frame_size
         
-        # 详细记录每个帧的信息
-        if frame_counter % 100 == 1:  # 每100个帧输出一次详细日志
-            logger.info(f"[P2P-RX-DEBUG] WebRTC收到音频帧 #{frame_counter} [客户端: {client_id}], "
-                     f"格式: {frame.format.name if hasattr(frame, 'format') else 'unknown'}, "
-                     f"采样率: {frame.sample_rate if hasattr(frame, 'sample_rate') else 'unknown'}Hz, "
-                     f"大小: {frame_size} 字节, 累计: {self.audio_bytes_counters[client_id]} 字节")
+        # 前10帧都详细记录，之后每10帧记录一次
+        if frame_counter <= 10 or frame_counter % 10 == 0:
+            format_name = frame.format.name if hasattr(frame, 'format') and frame.format else 'unknown'
+            sample_rate = frame.sample_rate if hasattr(frame, 'sample_rate') else 'unknown'
+            channels = getattr(frame, 'channels', '?')
+            samples = getattr(frame, 'samples', '?')
+            pts = getattr(frame, 'pts', 0)
+            
+            # 为前10帧使用更明显的标记
+            log_prefix = "[SERVER-AUDIO-FRAME]" if frame_counter <= 10 else "[P2P-RX-DEBUG]"
+            
+            logger.info(f"{log_prefix} 接收到音频帧 #{frame_counter} [客户端: {client_id}], "
+                    f"格式: {format_name}, 采样率: {sample_rate}Hz, "
+                    f"通道数: {channels}, 样本数: {samples}, PTS: {pts}, "
+                    f"大小: {frame_size} 字节, 累计: {self.audio_bytes_counters[client_id]} 字节")
+            
+            # 对第一帧进行额外的处理和检查
+            if frame_counter == 1:
+                logger.info(f"[SERVER-AUDIO-FIRST-FRAME] 首个音频帧详情 [客户端: {client_id}]:")
+                
+                # 尝试输出更多详细信息
+                for attr_name in dir(frame):
+                    if not attr_name.startswith('_') and not callable(getattr(frame, attr_name, None)):
+                        try:
+                            attr_value = getattr(frame, attr_name)
+                            logger.info(f"[SERVER-AUDIO-FIRST-FRAME] {attr_name} = {attr_value}")
+                        except Exception:
+                            pass
         
         # 先检查直接关联
         if client_id in self.webrtc_connections:

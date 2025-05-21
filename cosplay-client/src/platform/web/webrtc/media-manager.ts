@@ -77,21 +77,37 @@ export class MediaManager {
   }
 
   /**
-   * 初始化音频处理 - 使用标准WebRTC MediaStream API
-   * @param sampleRate 采样率
+   * 初始化音频处理
+   * @param sampleRate 音频采样率
    * @returns 是否初始化成功
    */
   public initAudioProcessing(sampleRate: number = 16000): boolean {
     if (!this.localStream) {
-      console.error('[XIAOZHI-CLIENT] 无法初始化音频处理，本地流不存在');
+      console.error('[XIAOZHI-CLIENT] 尚未获取本地媒体流，无法初始化音频处理');
       return false;
     }
 
     try {
-      // 获取媒体流上的音频轨道并应用兼容的音频约束
+      // 检查音频活动并设置监控
+      this.monitorAudioActivity();
+
+      // 使用标准WebRTC MediaStream API传输音频
       const audioTrack = this.localStream.getAudioTracks()[0];
       if (audioTrack) {
-        const constraints = {
+        // 输出音频轨道详细信息
+        console.log('[XIAOZHI-CLIENT] 音频轨道信息:', {
+          id: audioTrack.id,
+          label: audioTrack.label,
+          enabled: audioTrack.enabled,
+          muted: audioTrack.muted,
+          readyState: audioTrack.readyState
+        });
+        
+        // 确保轨道已启用
+        audioTrack.enabled = true;
+        
+        // 尝试设置音频约束
+        const constraints: MediaTrackConstraints = {
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -132,13 +148,69 @@ export class MediaManager {
   }
 
   /**
-   * 设置音频数据回调 - 对于标准MediaStream API不再需要处理JSON音频数据
-   * 保留此方法以兼容现有代码，但实际上回调不会被调用
+   * 设置音频回调
    * @param callback 音频数据回调函数
    */
-  public setAudioCallback(callback: ((data: ArrayBuffer) => void) | null): void {
+  public setAudioCallback(callback: (data: ArrayBuffer) => void): void {
     this.audioCallback = callback;
     console.log('[XIAOZHI-CLIENT] 音频回调已设置，但使用标准MediaStream API时不会被调用');
+  }
+
+  /**
+   * 监控音频活动以确保音频流动
+   */
+  private monitorAudioActivity(): void {
+    try {
+      if (!this.localStream) {
+        console.error('[XIAOZHI-CLIENT] 无法监控音频活动: 没有本地媒体流');
+        return;
+      }
+
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(this.localStream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      // 定期检测音频电平
+      const checkAudioLevel = () => {
+        if (!this.localStream) return;
+        
+        analyser.getByteFrequencyData(dataArray);
+        
+        // 计算音频电平平均值
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        
+        const audioTracks = this.localStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          const track = audioTracks[0];
+          if (average > 0.1) {
+            console.log(`[XIAOZHI-CLIENT] 检测到音频活动: 平均电平=${average.toFixed(2)}, 轨道状态=${track.readyState}, 活跃=${track.enabled}`);
+          }
+        }
+      };
+
+      // 每秒检测一次音频电平
+      const intervalId = setInterval(checkAudioLevel, 1000);
+
+      // 清理函数
+      const cleanup = () => {
+        clearInterval(intervalId);
+        audioContext.close();
+      };
+
+      // 5分钟后停止监控
+      setTimeout(cleanup, 5 * 60 * 1000);
+    } catch (error) {
+      console.error('[XIAOZHI-CLIENT] 监控音频活动失败:', error);
+    }
   }
 
   /**
