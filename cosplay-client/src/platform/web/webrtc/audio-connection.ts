@@ -67,6 +67,24 @@ export class WebRTCAudioConnection {
         this.mediaManager.setPeerConnection(this.peerConnection);
       }
       
+      // 重要：在创建offer之前创建DataChannel（WebRTC必须在offer中包含通道信息）
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 在创建offer前创建DataChannel`);
+      try {
+        const dataChannel = this.peerConnection.createDataChannel('audioData', {
+          ordered: true,  // 有序传输
+          maxRetransmits: 10  // 最多重传10次
+        });
+        
+        console.log(`WebRTCAudioConnection[${this.instanceId}]: DataChannel已创建, ID: ${dataChannel.id}, 状态: ${dataChannel.readyState}`);
+        
+        // 将DataChannel传递给MediaManager
+        if (this.mediaManager) {
+          this.mediaManager.setDataChannel(dataChannel);
+        }
+      } catch (e) {
+        console.error(`WebRTCAudioConnection[${this.instanceId}]: 创建DataChannel失败:`, e);
+      }
+      
       console.log(`WebRTCAudioConnection[${this.instanceId}]: RTCPeerConnection已创建, ICE服务器数量: ${this.config.iceServers.length}`);
 
       // 设置连接事件监听

@@ -309,6 +309,29 @@ export class MediaManager {
     this.peerConnection = pc;
     this.setupConnectionEvents();
   }
+  
+  /**
+   * 设置DataChannel实例
+   * @param channel 外部传入的DataChannel实例
+   */
+  public setDataChannel(channel: RTCDataChannel): void {
+    console.log(`[XIAOZHI-CLIENT] 设置外部DataChannel实例, ID: ${channel.id}, 标签: ${channel.label}`);
+    this.dataChannel = channel;
+    
+    // 设置DataChannel事件
+    this.dataChannel.onopen = () => {
+      console.log(`[P2P-DATACHANNEL] 数据通道已打开，标签: ${this.dataChannel?.label}, 状态: ${this.dataChannel?.readyState}`);
+      // 这里不需要触发事件，因为状态是通过ICE状态通知的
+    };
+    
+    this.dataChannel.onclose = () => {
+      console.log('[P2P-DATACHANNEL] 数据通道已关闭');
+    };
+    
+    this.dataChannel.onerror = (event: Event) => {
+      console.error('[P2P-DATACHANNEL] 数据通道错误:', event);
+    };
+  }
 
   /**
    * 处理ICE状态变化
@@ -361,37 +384,18 @@ export class MediaManager {
       if (iceState === 'connected' || iceState === 'completed') {
         this.webrtcConnected = true;
         console.log(`[XIAOZHI-CLIENT] MediaManager WebRTC连接已建立 (${iceState})，准备传输音频数据`);
-
-        // 在连接建立成功后创建DataChannel
-        if (!this.dataChannel) {
-          try {
-            console.log('[P2P-DATACHANNEL] MediaManager中连接已建立，创建DataChannel...');
-            
-            this.dataChannel = this.peerConnection.createDataChannel('audioData', {
-              ordered: true,  // 有序传输
-              maxRetransmits: 10  // 最多重传10次
-            });
-            
-            const channelId = this.dataChannel ? this.dataChannel.id : 'unknown';
-            console.log(`[P2P-DATACHANNEL] 数据通道已创建，等待打开，ID: ${channelId}`);
-            
-            // 设置DataChannel事件
-            this.dataChannel.onopen = () => {
-              if (this.dataChannel) {
-                console.log(`[P2P-DATACHANNEL] 数据通道已打开，标签: ${this.dataChannel.label}, 状态: ${this.dataChannel.readyState}`);
-              }
-            };
-            
-            this.dataChannel.onclose = () => {
-              console.log('[P2P-DATACHANNEL] 数据通道已关闭');
-            };
-            
-            this.dataChannel.onerror = (event: Event) => {
-              console.error('[P2P-DATACHANNEL] 数据通道错误:', event);
-            };
-          } catch (e) {
-            console.error('[P2P-DATACHANNEL] 创建DataChannel失败:', e);
-          }
+        
+        // 检查DataChannel状态
+        if (this.dataChannel) {
+          // 已有DataChannel，不再创建新的
+          console.log(`[P2P-DATACHANNEL] 数据通道状态更新，ID: ${this.dataChannel.id}, 标签: ${this.dataChannel.label}, 状态: ${this.dataChannel.readyState}`);
+          
+          // 因为WebRTC连接已建立，触发通知事件
+          this.eventEmitter.emit(WebRTCEvent.CONNECTED);
+        } else {
+          // 这种情况不应该发生，因为DataChannel应该在创建offer前已创建
+          // 但为了安全，仍然记录错误
+          console.error('[P2P-DATACHANNEL] 异常情况: ICE连接已建立但DataChannel不存在');
         }
       } else if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
         this.webrtcConnected = false;
