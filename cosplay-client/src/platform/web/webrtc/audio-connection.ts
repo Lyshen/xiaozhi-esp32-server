@@ -61,6 +61,12 @@ export class WebRTCAudioConnection {
         iceTransportPolicy: this.config.iceTransportPolicy || 'all'
       });
       
+      // 将PeerConnection传递给MediaManager，这样两个组件共享同一个实例
+      if (this.mediaManager) {
+        console.log(`WebRTCAudioConnection[${this.instanceId}]: 将PeerConnection实例传递给MediaManager`);
+        this.mediaManager.setPeerConnection(this.peerConnection);
+      }
+      
       console.log(`WebRTCAudioConnection[${this.instanceId}]: RTCPeerConnection已创建, ICE服务器数量: ${this.config.iceServers.length}`);
 
       // 设置连接事件监听

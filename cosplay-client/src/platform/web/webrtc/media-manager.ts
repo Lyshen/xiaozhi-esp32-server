@@ -129,8 +129,8 @@ export class MediaManager {
         });
       }
 
-      // 初始化WebRTC连接
-      this.initWebRTCConnection();
+      // 注意: 现在不需要在这里初始化WebRTC连接
+      // 因为PeerConnection现在是从外部设置的
 
       this.isProcessing = true;
       console.log('MediaManager: Audio processing initialized with WebRTC');
@@ -301,32 +301,71 @@ export class MediaManager {
   }
 
   /**
-   * 初始化WebRTC连接
+   * 设置PeerConnection实例
+   * @param pc 外部传入的PeerConnection实例
    */
-  private async initWebRTCConnection(): Promise<void> {
-    console.log('[XIAOZHI-CLIENT] 开始初始化WebRTC连接');
-    
-    // 创建RTC对等连接 - 使用直连模式
-    this.peerConnection = new RTCPeerConnection({
-      iceServers: []
-    });
+  public setPeerConnection(pc: RTCPeerConnection): void {
+    console.log('[XIAOZHI-CLIENT] 设置外部PeerConnection实例');
+    this.peerConnection = pc;
+    this.setupConnectionEvents();
+  }
 
+  /**
+   * 处理ICE状态变化
+   */
+  private async handleIceConnectionChange(): Promise<void> {
+    if (!this.peerConnection) return;
+    
+    // 在这里添加处理ICE状态变化的代码
+    console.log(`[XIAOZHI-CLIENT] ICE状态变化: ${this.peerConnection.iceConnectionState}`);
+  }
+  
+  /**
+   * 建立WebRTC连接
+   */
+  public async connect(): Promise<void> {
+    console.log('[XIAOZHI-CLIENT] 开始建立WebRTC连接...');
+    
+    try {
+      this.close(); // 先关闭已有连接
+      // 注意：不再调用initWebRTCConnection，因为PeerConnection现在从外部设置
+      // 现在仅设置事件监听
+      if (this.peerConnection) {
+        this.setupConnectionEvents();
+      } else {
+        console.error('[XIAOZHI-CLIENT] 无法建立连接，PeerConnection未设置');
+      }
+    } catch (error) {
+      console.error('[XIAOZHI-CLIENT] 建立WebRTC连接失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 设置WebRTC连接事件监听
+   */
+  private setupConnectionEvents(): void {
+    if (!this.peerConnection) {
+      console.error('[XIAOZHI-CLIENT] 无法设置连接事件，PeerConnection不存在');
+      return;
+    }
+    
     // 监控ICE连接状态变化
-    this.peerConnection.oniceconnectionstatechange = () => {
+    this.peerConnection.addEventListener('iceconnectionstatechange', () => {
+      console.log(`[XIAOZHI-CLIENT] WebRTC oniceconnectionstatechange in MediaManager`);
       if (!this.peerConnection) return;
       
       const iceState = this.peerConnection.iceConnectionState;
-      console.log(`[XIAOZHI-CLIENT] WebRTC ICE连接状态变化: ${iceState}`);
+      console.log(`[XIAOZHI-CLIENT] MediaManager ICE连接状态变化: ${iceState}`);
       
       if (iceState === 'connected' || iceState === 'completed') {
         this.webrtcConnected = true;
-        console.log(`[XIAOZHI-CLIENT] WebRTC连接已建立 (${iceState})，准备传输音频数据`);
-        this.eventEmitter.emit(WebRTCEvent.CONNECTED);
-        
+        console.log(`[XIAOZHI-CLIENT] MediaManager WebRTC连接已建立 (${iceState})，准备传输音频数据`);
+
         // 在连接建立成功后创建DataChannel
         if (!this.dataChannel) {
           try {
-            console.log('[P2P-DATACHANNEL] 连接已建立，创建DataChannel...');
+            console.log('[P2P-DATACHANNEL] MediaManager中连接已建立，创建DataChannel...');
             
             this.dataChannel = this.peerConnection.createDataChannel('audioData', {
               ordered: true,  // 有序传输
@@ -356,7 +395,7 @@ export class MediaManager {
         }
       } else if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
         this.webrtcConnected = false;
-        console.log('[XIAOZHI-CLIENT] WebRTC连接已断开');
+        console.log('[XIAOZHI-CLIENT] MediaManager WebRTC连接已断开');
         this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
         
         // 清理数据通道
@@ -365,78 +404,50 @@ export class MediaManager {
           this.dataChannel = null;
         }
       }
-    };
+    });
+  }
+
+  /**
+   * 关闭并清理WebRTC连接
+   */
+  public close(): void {
+    console.log('[XIAOZHI-CLIENT] 关闭并清理WebRTC连接');
     
-    // 监控ICE候选者收集
-    this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('[XIAOZHI-CLIENT] 发现新的ICE候选者');
-        
-        if (this.signalingClient && this.signalingClient.isConnected()) {
-          const success = this.signalingClient.sendIceCandidate(event.candidate);
-          if (!success) {
-            console.error('[XIAOZHI-CLIENT] 发送ICE候选者失败');
-          }
-        } else {
-          console.error('[XIAOZHI-CLIENT] SignalingClient未连接或未设置，无法发送ICE候选者');
+    // 清理数据通道
+    if (this.dataChannel) {
+      if (this.dataChannel.readyState === 'open') {
+        try {
+          this.dataChannel.close();
+        } catch (e) {
+          console.error('[P2P-DATACHANNEL] 关闭数据通道时出错:', e);
         }
       }
-    };
-
-    // 添加本地音频轨道
-    if (this.localStream) {
-      this.localStream.getAudioTracks().forEach(track => {
-        this.peerConnection?.addTrack(track, this.localStream!);
-      });
+      this.dataChannel = null;
     }
-
-    try {
-      // 创建offer
-      const offer = await this.peerConnection.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: false
-      });
-
-      // 设置本地描述
-      await this.peerConnection.setLocalDescription(offer);
-      console.log('[XIAOZHI-CLIENT] 本地SDP设置完成');
-
-      // 发送offer到信令服务器
-      if (this.signalingClient && this.signalingClient.isConnected()) {
-        const success = this.signalingClient.sendOffer(offer);
-        if (!success) {
-          console.error('[XIAOZHI-CLIENT] 发送SDP offer失败');
-        }
-      } else {
-        console.error('[XIAOZHI-CLIENT] SignalingClient未连接或未设置，无法发送offer');
-      }
-    } catch (error) {
-      console.error('[XIAOZHI-CLIENT] 创建WebRTC offer时出错:', error);
-    }
+    
+    // 设置连接状态
+    this.webrtcConnected = false;
+    
+    // 注意：不在这里关闭PeerConnection，因为它现在属于外部管理
   }
 
   /**
    * 设置信令消息处理
    * 这个方法设置事件监听器，以响应来自信令服务器的WebRTC相关消息
+   * 注意: 现在不在MediaManager中处理SDP，而是在WebRTCAudioConnection中统一处理
    */
   private setupSignalingEvents(): void {
     if (!this.signalingClient || !this.eventEmitter) return;
 
-    // 监听来自信令服务器的answer
-    this.eventEmitter.on('answer', (payload: RTCSessionDescriptionInit) => {
-      if (this.peerConnection) {
-        console.log('[XIAOZHI-CLIENT] 收到SDP answer，设置远程描述');
-        this.peerConnection.setRemoteDescription(new RTCSessionDescription(payload))
-          .catch(error => console.error('[XIAOZHI-CLIENT] 设置远程描述失败:', error));
-      }
-    });
+    // 注意: 不再监听'answer'事件，这已在WebRTCAudioConnection中处理
+    // 避免重复设置RemoteDescription导致出错
 
-    // 监听来自信令服务器的ICE候选者
+    // 仅监听其他必要的WebRTC事件
     this.eventEmitter.on('ice-candidate', (payload: RTCIceCandidateInit) => {
       if (this.peerConnection) {
-        console.log('[XIAOZHI-CLIENT] 收到ICE候选者，添加到连接');
+        console.log('[XIAOZHI-CLIENT-MEDIA] 收到ICE候选者，添加到连接');
         this.peerConnection.addIceCandidate(new RTCIceCandidate(payload))
-          .catch(error => console.error('[XIAOZHI-CLIENT] 添加ICE候选者失败:', error));
+          .catch(error => console.error('[XIAOZHI-CLIENT-MEDIA] 添加ICE候选者失败:', error));
       }
     });
   }
