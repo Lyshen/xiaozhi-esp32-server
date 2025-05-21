@@ -206,8 +206,7 @@ class AudioFrameHandler:
                         audio_array = frame.to_ndarray()
                         if audio_array is not None and audio_array.size > 0:
                             pcm_data = audio_array.tobytes()
-                            logger.info(f"[P2P-DATA] 成功提取PCM数据，数据包 #{counter}，大小: {len(pcm_data)} 字节，样本数: {audio_array.size}")
-                            
+                                                        
                             # 将PCM数据转换为Opus格式
                             sample_rate = frame.sample_rate if hasattr(frame, 'sample_rate') else 16000
                             channels = 1  # 假定单声道

@@ -967,7 +967,6 @@ class ConnectionManager:
             return False
         
     async def process_audio_frame(self, frame, client_id):
-        logger.info(f"process_audio_frame")
         """
         处理WebRTC音频帧
         

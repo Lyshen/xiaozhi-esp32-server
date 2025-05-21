@@ -35,11 +35,11 @@ COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/pytho
 COPY main/xiaozhi-server .
 
 # 复制WebRTC配置示例
-COPY data/webrtc_config_sample.yaml /opt/xiaozhi-esp32-server/data/
+COPY data/.config.yaml /opt/xiaozhi-esp32-server/data/
 
 # 将WebRTC配置复制到默认配置文件
 RUN mkdir -p /opt/xiaozhi-esp32-server/data && \
-    cp webrtc_config_sample.yaml /opt/xiaozhi-esp32-server/data/.config.yaml || true
+    cp .config.yaml /opt/xiaozhi-esp32-server/data/.config.yaml || true
 
 # 暴露WebSocket服务器端口和WebRTC信令服务器端口
 EXPOSE 8000 8082

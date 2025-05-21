@@ -96,7 +96,7 @@ class AudioEncoder:
             
             # 编码为Opus格式
             opus_data = self.encoder.encode(pcm_bytes, self.frame_size)
-            logger.info(f"[AUDIO-ENCODER] PCM数据({len(pcm_bytes)}字节)成功编码为Opus格式({len(opus_data)}字节)")
+            logger.debug(f"[AUDIO-ENCODER] PCM数据({len(pcm_bytes)}字节)成功编码为Opus格式({len(opus_data)}字节)")
             return opus_data
             
         except Exception as e:
@@ -160,8 +160,7 @@ def encode_pcm_to_opus(pcm_data, sample_rate=16000, channels=1, frame_size=960):
                     frame_size = 960
                 else:
                     frame_size = 480
-                logger.info(f"[AUDIO-ENCODER] 为48kHz采样率选择帧大小: {frame_size}")
-        
+                
         # 获取编码器并进行编码
         encoder = get_encoder(sample_rate, channels, frame_size)
         return encoder.encode_pcm_to_opus(pcm_data)
