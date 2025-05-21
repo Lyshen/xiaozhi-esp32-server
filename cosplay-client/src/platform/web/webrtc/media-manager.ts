@@ -18,6 +18,10 @@ export class MediaManager {
   private audioCallback: ((data: ArrayBuffer) => void) | null = null;
   private audioPacketCounter: number = 0;
   private lastLogTime: number = 0;
+  
+  // WebRTC数据通道相关
+  private dataChannel: RTCDataChannel | null = null;
+  private totalBytesSent: number = 0;
 
   /**
    * 构造函数
@@ -147,44 +151,73 @@ export class MediaManager {
         return; // 如果没有在处理音频，直接返回
       }
 
-      // 获取输入缓冲区中的所有音频数据
+      // 获取输入数据
       const inputData = event.inputBuffer.getChannelData(0);
       
       // 转换为16位整数
       const pcmData = this.floatTo16BitPCM(inputData);
       
-      // 如果有回调，将数据发送给回调
-      if (this.audioCallback) {
-        // 增加包计数器
-        this.audioPacketCounter++;
+      // 增加包计数器
+      this.audioPacketCounter++;
+      
+      // 计算数据大小
+      const pcmDataSize = pcmData.buffer.byteLength;
+      
+      // 检查WebRTC连接状态
+      let webrtcState = '未连接';
+      let iceState = '未知';
+      let dataChannelState = '未创建';
+      
+      if (this.peerConnection) {
+        webrtcState = this.webrtcConnected ? '已连接' : '连接中';
+        iceState = this.peerConnection.iceConnectionState;
         
-        // 更详细的日志，记录音频数据发送情况
-        const pcmDataSize = pcmData.buffer.byteLength;
-        const now = Date.now();
-        
-        // 检查WebRTC连接状态
-        let webrtcState = '未连接';
-        let iceState = '未知';
-        if (this.peerConnection) {
-          webrtcState = this.webrtcConnected ? '已连接' : '连接中';
-          iceState = this.peerConnection.iceConnectionState;
+        if (this.dataChannel) {
+          dataChannelState = this.dataChannel.readyState;
         }
-        
-        // 每20个包输出一次详细日志，或者每5秒输出一次
-        const logInterval = 5000; // 5秒
-        //if (this.audioPacketCounter % 20 === 0 || now - this.lastLogTime > logInterval) {
-          console.log(`[P2P-TX-DEBUG] 音频包 #${this.audioPacketCounter} 准备发送: ` + 
-                     `采样率=${event.inputBuffer.sampleRate}Hz, ` +
-                     `大小=${pcmDataSize} 字节, ` +
-                     `WebRTC状态=${webrtcState}, ` +
-                     `ICE状态=${iceState}`);
-          this.lastLogTime = now;
-        //}
-        
-        // 在音频数据发送前记录日志
-        //if (this.audioPacketCounter === 1 || this.audioPacketCounter % 100 === 0) {
+      }
+      
+      // 每20个包输出一次详细日志
+      if (this.audioPacketCounter % 20 === 0) {
+        console.log(`[P2P-TX-DEBUG] 音频包 #${this.audioPacketCounter} 准备发送: ` + 
+                   `采样率=${event.inputBuffer.sampleRate}Hz, ` + 
+                   `大小=${pcmDataSize} 字节, ` + 
+                   `WebRTC状态=${webrtcState}, ` + 
+                   `ICE状态=${iceState}, ` + 
+                   `数据通道=${dataChannelState}`);
+      }
+      
+      // 1. 优先通过WebRTC DataChannel发送数据
+      if (this.webrtcConnected && this.dataChannel && this.dataChannel.readyState === 'open') {
+        try {
+          // 创建音频数据包
+          const audioPacket = {
+            id: this.audioPacketCounter,
+            timestamp: Date.now(),
+            sampleRate: event.inputBuffer.sampleRate,
+            data: Array.from(pcmData)  // 转换为数组以便JSON序列化
+          };
+          
+          // 发送数据
+          this.dataChannel.send(JSON.stringify(audioPacket));
+          this.totalBytesSent += pcmDataSize;
+          
+          // 每50个包输出一次数据发送日志
+          if (this.audioPacketCounter % 50 === 0) {
+            console.log(`[P2P-DATA-SENT] 通过WebRTC数据通道发送音频包 #${this.audioPacketCounter}, ` + 
+                      `大小: ${pcmDataSize} 字节, 累计: ${this.totalBytesSent} 字节`);
+          }
+        } catch (e) {
+          console.error('[P2P-TX-ERROR] 通过数据通道发送音频数据失败:', e);
+        }
+      }
+      
+      // 2. 如果有回调，也使用传统方式发送数据
+      if (this.audioCallback) {
+        // 全量日志只在特定包号输出
+        if (this.audioPacketCounter === 1 || this.audioPacketCounter % 100 === 0) {
           console.log(`[CLIENT-AUDIO] 音频包 #${this.audioPacketCounter}, 采样率: ${event.inputBuffer.sampleRate}Hz, 大小: ${pcmDataSize} 字节`);
-        //}
+        }
         
         // 发送数据到回调
         this.audioCallback(pcmData.buffer);
@@ -280,18 +313,56 @@ export class MediaManager {
 
     // 监控ICE连接状态变化
     this.peerConnection.oniceconnectionstatechange = () => {
-      if (this.peerConnection) {
-        console.log(`[XIAOZHI-CLIENT] WebRTC ICE连接状态变化: ${this.peerConnection.iceConnectionState}`);
+      if (!this.peerConnection) return;
+      
+      const iceState = this.peerConnection.iceConnectionState;
+      console.log(`[XIAOZHI-CLIENT] WebRTC ICE连接状态变化: ${iceState}`);
+      
+      if (iceState === 'connected' || iceState === 'completed') {
+        this.webrtcConnected = true;
+        console.log(`[XIAOZHI-CLIENT] WebRTC连接已建立 (${iceState})，准备传输音频数据`);
+        this.eventEmitter.emit(WebRTCEvent.CONNECTED);
         
-        if (this.peerConnection.iceConnectionState === 'connected') {
-          this.webrtcConnected = true;
-          console.log('[XIAOZHI-CLIENT] WebRTC连接已建立，准备传输音频数据');
-          this.eventEmitter.emit(WebRTCEvent.CONNECTED);
-        } else if (this.peerConnection.iceConnectionState === 'disconnected' || 
-                  this.peerConnection.iceConnectionState === 'failed') {
-          this.webrtcConnected = false;
-          console.log('[XIAOZHI-CLIENT] WebRTC连接已断开');
-          this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
+        // 在连接建立成功后创建DataChannel
+        if (!this.dataChannel) {
+          try {
+            console.log('[P2P-DATACHANNEL] 连接已建立，创建DataChannel...');
+            
+            this.dataChannel = this.peerConnection.createDataChannel('audioData', {
+              ordered: true,  // 有序传输
+              maxRetransmits: 10  // 最多重传10次
+            });
+            
+            const channelId = this.dataChannel ? this.dataChannel.id : 'unknown';
+            console.log(`[P2P-DATACHANNEL] 数据通道已创建，等待打开，ID: ${channelId}`);
+            
+            // 设置DataChannel事件
+            this.dataChannel.onopen = () => {
+              if (this.dataChannel) {
+                console.log(`[P2P-DATACHANNEL] 数据通道已打开，标签: ${this.dataChannel.label}, 状态: ${this.dataChannel.readyState}`);
+              }
+            };
+            
+            this.dataChannel.onclose = () => {
+              console.log('[P2P-DATACHANNEL] 数据通道已关闭');
+            };
+            
+            this.dataChannel.onerror = (event: Event) => {
+              console.error('[P2P-DATACHANNEL] 数据通道错误:', event);
+            };
+          } catch (e) {
+            console.error('[P2P-DATACHANNEL] 创建DataChannel失败:', e);
+          }
+        }
+      } else if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
+        this.webrtcConnected = false;
+        console.log('[XIAOZHI-CLIENT] WebRTC连接已断开');
+        this.eventEmitter.emit(WebRTCEvent.DISCONNECTED);
+        
+        // 清理数据通道
+        if (this.dataChannel) {
+          console.log('[P2P-DATACHANNEL] 关闭数据通道');
+          this.dataChannel = null;
         }
       }
     };

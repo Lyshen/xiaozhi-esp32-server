@@ -33,7 +33,7 @@ export class WebRTCAudioConnection {
     this.eventEmitter = new EventEmitter();
     
     // 使用同一个sessionId创建信令客户端
-    this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter, this.sessionId);
+    this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter);
     this.mediaManager = new MediaManager(this.eventEmitter);
     
     // 关键修复：将SignalingClient实例设置到MediaManager
