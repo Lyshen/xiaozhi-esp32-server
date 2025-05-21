@@ -987,13 +987,24 @@ class ConnectionManager:
         
         # 计算帧大小
         frame_size = 0
-        if hasattr(frame, 'planes') and frame.planes:
-            frame_size = len(frame.planes[0])
-        elif hasattr(frame, 'to_ndarray'):
-            try:
-                frame_size = len(frame.to_ndarray().tobytes())
-            except Exception as e:
-                frame_size = 0
+        try:
+            if hasattr(frame, 'planes') and frame.planes:
+                # 使用正确的方法获取AudioPlane的大小
+                if hasattr(frame.planes[0], 'buffer_size'):
+                    frame_size = frame.planes[0].buffer_size
+                elif hasattr(frame.planes[0], 'line_size'):
+                    frame_size = frame.planes[0].line_size
+                elif hasattr(frame, 'samples') and hasattr(frame, 'channels'):
+                    # 根据样本数和通道数计算帧大小
+                    bytes_per_sample = 2  # 假设16位样本 (2字节)
+                    frame_size = frame.samples * frame.channels * bytes_per_sample
+            elif hasattr(frame, 'to_ndarray'):
+                try:
+                    frame_size = len(frame.to_ndarray().tobytes())
+                except Exception as e:
+                    logger.warning(f"[SERVER-AUDIO] 无法使用to_ndarray获取帧大小: {e}")
+        except Exception as e:
+            logger.warning(f"[SERVER-AUDIO] 计算帧大小时出错: {e}")
         
         # 累计字节数
         self.audio_bytes_counters[client_id] += frame_size
@@ -1027,28 +1038,18 @@ class ConnectionManager:
                         except Exception:
                             pass
         
-        # 先检查直接关联
-        if client_id in self.webrtc_connections:
-            conn = self.webrtc_connections[client_id]
-            await conn.process_audio_frame(frame)
-        else:
-            # 尝试通过会话ID查找关联
-            mapped_client_found = False
-            for session_id, mapped_client_id in self.session_map.items():
-                if mapped_client_id in self.webrtc_connections:
-                    logger.info(f"[会话ID映射] 将音频帧重定向到客户端 {mapped_client_id} (会话ID: {session_id})")
-                    conn = self.webrtc_connections[mapped_client_id]
-                    await conn.process_audio_frame(frame)
-                    mapped_client_found = True
-                    break
-            
-            if not mapped_client_found:
-                logger.warning(f"[P2P-RX-WARNING] 没有找到客户端的WebRTC连接 [客户端: {client_id}]")
-                # 记录现有的映射数据以便于调试
-                if self.session_map:
-                    logger.debug(f"现有会话ID映射: {self.session_map}")
-                if self.webrtc_connections:
-                    logger.debug(f"现有活跃连接: {list(self.webrtc_connections.keys())}")
+        # 创建AudioFrameHandler实例（如果尚未创建）
+        if not hasattr(self, 'audio_frame_handler'):
+            from .modules.audio_frame_handler import AudioFrameHandler
+            self.audio_frame_handler = AudioFrameHandler()
+        
+        # 使用AudioFrameHandler处理音频帧
+        try:
+            # 使用帧处理器处理音频帧
+            await self.audio_frame_handler.process_audio_frame(frame, client_id, self.webrtc_connections)
+        except Exception as e:
+            logger.error(f"[SERVER-AUDIO-ERROR] 处理音频帧时发生错误: {e}")
+            logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
     
     async def handle_connection_failure(self, client_id):
         """

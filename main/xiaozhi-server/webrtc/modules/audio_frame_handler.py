@@ -118,9 +118,11 @@ class AudioFrameHandler:
                          f"大小={pcm_data_size} 字节, 累计={self.audio_bytes_counters[client_id]} 字节")
                 
             # 每50个包输出详细的WebRTC连接统计信息
-            if counter % 50 == 0 and client_id in webrtc_connections and webrtc_connections[client_id].pc:
-                    pc = webrtc_connections[client_id].pc
-                    try:
+            try:
+                if counter % 50 == 0 and client_id in webrtc_connections:
+                    # 检查WebRTCConnection对象是否有peer_connection属性
+                    if hasattr(webrtc_connections[client_id], 'peer_connection') and webrtc_connections[client_id].peer_connection:
+                        pc = webrtc_connections[client_id].peer_connection
                         # 异步获取统计信息
                         async def get_stats():
                             stats = await pc.getStats()
@@ -131,19 +133,37 @@ class AudioFrameHandler:
                                     logger.info(f"[P2P-STATS] 远程音频统计 [客户端: {client_id}] - RTT: {stat.roundTripTime if hasattr(stat, 'roundTripTime') else 'N/A'}ms, 丢包率: {stat.fractionLost if hasattr(stat, 'fractionLost') else 'N/A'}")
                         # 创建任务并运行
                         asyncio.create_task(get_stats())
-                    except Exception as e:
-                        logger.error(f"[P2P-STATS] 获取WebRTC统计信息失败 [客户端: {client_id}]: {e}")
+            except Exception as e:
+                logger.error(f"[P2P-STATS] 获取WebRTC统计信息失败 [客户端: {client_id}]: {e}")
+                logger.error(f"[P2P-STATS] 堆栈跟踪: {traceback.format_exc()}")
             
             # 移除对frame进行深度复制的尝试，因为AudioFrame对象不支持深度复制
             
-            # 1. 将音频帧转换为PCM格式 (用于音频分析和存储)
-            audio_array = await self.convert_audio_to_pcm(frame)
-            self.audio_bytes_counters[client_id] += len(audio_array)
+            # 1. 检查是否为Opus格式，如果是，尝试保留原始Opus编码数据
+            original_opus_data = None
+            is_opus_format = hasattr(frame, 'format') and frame.format and frame.format.name.lower() == 'opus'
             
-            # 2. 记录音频转换完成 - 减少日志输出
-            if counter == 1 or counter % 100 == 0:
-                logger.info(f"[P2P-DATA] 音频转换完成，数据包 #{counter}，大小: {len(audio_array)} 字节，累计: {self.audio_bytes_counters[client_id]} 字节")
-            
+            if is_opus_format and hasattr(frame, 'planes') and frame.planes:
+                try:
+                    # 保留原始Opus编码数据
+                    original_opus_data = bytes(frame.planes[0])
+                    if counter == 1 or counter % 100 == 0:
+                        logger.info(f"[P2P-DATA] 成功提取Opus编码数据，数据包 #{counter}，大小: {len(original_opus_data)} 字节")
+                except Exception as e:
+                    logger.warning(f"[P2P-DATA] 提取Opus数据失败: {e}，回退到PCM转换")
+                    original_opus_data = None
+        
+            # 2. 如果需要PCM格式（用于调试或其他处理），但不用于VAD/ASR
+            pcm_data = None
+            if not is_opus_format or original_opus_data is None:
+                # 只有非Opus格式或无法提取原始Opus数据时才转换为PCM
+                pcm_data = await self.convert_audio_to_pcm(frame)
+                if counter == 1 or counter % 100 == 0:
+                    logger.info(f"[P2P-DATA] PCM转换完成，数据包 #{counter}，大小: {len(pcm_data)} 字节")
+                self.audio_bytes_counters[client_id] += len(pcm_data)
+            else:
+                self.audio_bytes_counters[client_id] += len(original_opus_data)
+        
             # 3. 获取或创建WebRTC连接对象
             if client_id in webrtc_connections:
                 conn = webrtc_connections[client_id]
@@ -155,12 +175,13 @@ class AudioFrameHandler:
                 conn = WebRTCConnection(client_id)
                 webrtc_connections[client_id] = conn
                 logger.info(f"[P2P-DATA] 创建新的WebRTC连接对象，客户端ID: {client_id}")
-            
-            # 3. 将音频数据添加到ASR缓冲区
-            # 在convert_audio_to_pcm已经尽可能保留了Opus格式
-            conn.asr_audio.append(audio_array)
-            if counter % 100 == 0:
-                logger.info(f"[P2P-DATA] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+        
+            # 4. 将音频数据添加到ASR缓冲区 - 优先使用原始Opus数据
+            audio_data_for_asr = original_opus_data if original_opus_data is not None else pcm_data
+            if audio_data_for_asr is not None:
+                conn.asr_audio.append(audio_data_for_asr)
+                if counter % 100 == 0:
+                    logger.info(f"[P2P-DATA] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
             
             # 4. 音频包计数器
             packet_counter = self.audio_packet_counters[client_id]
@@ -267,10 +288,14 @@ class AudioFrameHandler:
                     except ImportError:
                         from core.handle.receiveAudioHandle import process_audio_internal
                     
-                    # 调用原有VAD处理逻辑
+                    # 使用正确的音频数据格式调用VAD处理逻辑
+                    audio_data_for_vad = original_opus_data if is_opus_format and original_opus_data is not None else pcm_data
+                    
                     if packet_counter % 100 == 0:
-                        logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，音频长度: {len(audio_array)} 字节")
-                    result = await process_audio_internal(conn, audio_array)
+                        format_type = "Opus" if is_opus_format and original_opus_data is not None else "PCM"
+                        logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，格式: {format_type}，音频长度: {len(audio_data_for_vad)} 字节")
+                    
+                    result = await process_audio_internal(conn, audio_data_for_vad)
                     if packet_counter % 100 == 0 or result is not None:
                         logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{packet_counter}，结果: {result}")
                 except ImportError as e:
