@@ -47,6 +47,9 @@ class ConnectionManager:
         # 会话ID映射表 - 将WebRTC会话ID映射到客户端ID
         self.session_map = {}  # session_id -> client_id
         
+        # 客户端ID映射表 - 将不同类型的客户端ID进行映射
+        self.client_id_map = {}  # p2p_client_id (UUID) -> real_client_id (device-id)
+        
         # 存储客户端的音频处理统计信息
         self.client_stats = {}  # client_id -> stats dict
         
@@ -125,9 +128,13 @@ class ConnectionManager:
             bin_bytes = 0
             last_log_time = time.time()
             
+            # 音频数据缓存
+            audio_buffer = bytearray()  # 缓存音频数据
+            is_opus_format = False  # 音频格式标记
+            
             @channel.on("message")
             def on_message(message):
-                nonlocal msg_count, json_bytes, bin_bytes, last_log_time
+                nonlocal msg_count, json_bytes, bin_bytes, last_log_time, audio_buffer, is_opus_format
                 msg_count += 1
                 current_time = time.time()
                 
@@ -140,16 +147,90 @@ class ConnectionManager:
                         
                         # 音频数据包特殊处理
                         if 'id' in data and 'data' in data and 'sampleRate' in data:
+                            
+                            # 检查音频格式
+                            if 'format' in data:
+                                format_type = data['format'].lower()
+                                if format_type == 'opus':
+                                    is_opus_format = True
+                                    if msg_count == 1:
+                                        logger.info(f"[DATACHANNEL] 音频格式检测: Opus [客户端: {client_id}]")
+                                else:
+                                    if msg_count == 1:
+                                        logger.info(f"[DATACHANNEL] 音频格式检测: {format_type} [客户端: {client_id}]")
+                            # 使用头部特征判断是否为Opus
+                            elif msg_count == 1 and isinstance(data['data'], list) and len(data['data']) > 10:
+                                # 试图检测这是否是OPUS签名特征
+                                opus_header_signature = [79, 112, 117, 115, 72, 101, 97, 100]  # "OpusHead"的ASCII码
+                                if all(data['data'][i] == opus_header_signature[i] for i in range(min(8, len(data['data'])))):
+                                    is_opus_format = True
+                                    logger.info(f"[DATACHANNEL] 通过特征侦测到Opus格式 [客户端: {client_id}]")
+                            
+                            # 将音频数据添加到缓冲区
+                            try:
+                                # 将JSON数组转为二进制数据
+                                audio_data = bytearray()
+                                for sample in data['data']:
+                                    # 直接将数字转为字节
+                                    if isinstance(sample, int):
+                                        audio_data.append(sample & 0xFF)
+                                    else:
+                                        # 强制转换为整数
+                                        audio_data.append(int(float(sample)) & 0xFF)
+                                
+                                # 累积到缓冲区
+                                audio_buffer.extend(audio_data)
+                            except Exception as e:
+                                logger.error(f"[DATACHANNEL] 音频数据转换失败 [客户端: {client_id}]: {e}")
+                            
                             # 音频数据包只每100个输出一次日志
                             if msg_count % 100 == 1 or (current_time - last_log_time) > 10:
                                 logger.info(f"[DATACHANNEL] 音频数据包统计 [客户端: {client_id}]: "
                                           f"计数: {msg_count}, 音频包ID: {data['id']}, "
                                           f"采样率: {data['sampleRate']}Hz, "
-                                          f"JSON字节数: {json_bytes}")
+                                          f"格式: {'Opus' if is_opus_format else '未知'}, "
+                                          f"缓冲区大小: {len(audio_buffer)} 字节")
                                 last_log_time = current_time
                         # 控制命令始终输出日志
                         elif 'command' in data:
                             logger.info(f"[DATACHANNEL] 收到控制命令 [客户端: {client_id}]: {data['command']}")
+                            
+                            # 处理停止录音命令（按钮释放）
+                            if data['command'] == 'stop_recording' or data['command'] == 'stop':
+                                logger.info(f"[DATACHANNEL] 检测到停止录音命令 [客户端: {client_id}]")
+                                
+                                # 获取真实客户端ID
+                                real_id = self.get_real_client_id(client_id)
+                                if real_id != client_id:
+                                    logger.info(f"[DATACHANNEL] 客户端ID已映射 [原始ID: {client_id}, 真实ID: {real_id}]")
+                                
+                                # 查找真实客户端ID的WebRTC连接
+                                if real_id in self.webrtc_connections:
+                                    webrtc_conn = self.webrtc_connections[real_id]
+                                    # 标记按钮释放状态
+                                    webrtc_conn.client_voice_stop = True
+                                    webrtc_conn.client_voice_stop_requested = True
+                                    logger.info(f"[DATACHANNEL] 已设置按钮释放状态 [客户端: {real_id}]")
+                                elif client_id in self.webrtc_connections:
+                                    # 如果映射后找不到，尝试使用原始ID
+                                    webrtc_conn = self.webrtc_connections[client_id]
+                                    webrtc_conn.client_voice_stop = True
+                                    webrtc_conn.client_voice_stop_requested = True
+                                    logger.info(f"[DATACHANNEL] 使用原始ID设置按钮释放状态 [客户端: {client_id}]")
+                                    # 添加映射关系，确保后续操作一致性
+                                    self.client_id_map[client_id] = client_id
+                                    
+                                    # 将缓存的音频数据传给VAD/ASR处理
+                                    if len(audio_buffer) > 0:
+                                        logger.info(f"[DATACHANNEL] 开始处理缓存的音频数据 [客户端: {client_id}, 大小: {len(audio_buffer)} 字节]")
+                                        # 将缓存的数据复制到连接对象的缓冲区
+                                        webrtc_conn.client_audio_buffer.extend(audio_buffer)
+                                        # 触发VAD/ASR处理
+                                        asyncio.create_task(self._process_buffered_audio(client_id, bytes(audio_buffer)))
+                                        # 清空缓冲区
+                                        audio_buffer = bytearray()
+                                else:
+                                    logger.warning(f"[DATACHANNEL] 找不到客户端的WebRTC连接对象 [客户端: {client_id}]")
                         # 其他普通JSON消息
                         else:
                             logger.info(f"[DATACHANNEL] 收到JSON消息 [客户端: {client_id}]: {data}")
@@ -172,6 +253,7 @@ class ConnectionManager:
         # 设置音频/视频轨道回调
         @pc.on("track")
         async def on_track(track):
+            logger.info(f"on_track {track.kind}")
             if track.kind == "audio":
                 # 检查是否有会话ID关联
                 session_ids = [sid for sid, cid in self.session_map.items() if cid == client_id]
@@ -179,6 +261,34 @@ class ConnectionManager:
                     logger.info(f"收到音频轨道 [客户端: {client_id}, 会话ID: {session_ids[0]}]")
                 else:
                     logger.info(f"收到音频轨道 [客户端: {client_id}]")
+                
+                # 记录轨道的详细信息
+                logger.info(f"[SERVER-AUDIO-TRACK] 轨道详情 [客户端: {client_id}]")
+                logger.info(f"[SERVER-AUDIO-TRACK] 类型: {track.kind}")
+                logger.info(f"[SERVER-AUDIO-TRACK] ID: {track.id if hasattr(track, 'id') else 'unknown'}")
+                
+                # 尝试获取编解码器信息
+                try:
+                    # 检查当前会话描述中的codec信息
+                    if pc.remoteDescription:
+                        sdp = pc.remoteDescription.sdp
+                        import re
+                        # 提取音频编解码器信息
+                        codec_lines = re.findall(r'a=rtpmap:\d+ ([^\r\n]+)', sdp)
+                        opus_codecs = [c for c in codec_lines if 'opus' in c.lower()]
+                        if opus_codecs:
+                            logger.info(f"[SERVER-AUDIO-CODEC] 检测到Opus编解码器: {opus_codecs}")
+                        else:
+                            logger.info(f"[SERVER-AUDIO-CODEC] 所有编解码器: {codec_lines}")
+                        
+                        # 提取采样率信息
+                        sample_rate_matches = re.findall(r'opus/([0-9]+)/', sdp)
+                        if sample_rate_matches:
+                            logger.info(f"[SERVER-AUDIO-CODEC] Opus采样率: {sample_rate_matches[0]}Hz")
+                except Exception as e:
+                    logger.error(f"[SERVER-AUDIO-CODEC] 获取编解码器信息失败: {e}")
+                    import traceback
+                    logger.error(f"[SERVER-AUDIO-CODEC] 堆栈跟踪: {traceback.format_exc()}")
                 
                 # 创建处理音频帧的回调函数
                 async def frame_callback(frame):
@@ -307,14 +417,58 @@ class ConnectionManager:
         处理来自客户端的Offer
         
         参数:
-        client_id: 客户端ID
+        client_id: 客户端 ID
         offer_data: Offer数据
         websocket: WebSocket连接对象（可选）
         """
         try:
-            logger.info(f"处理Offer [客户端: {client_id}]")
+            logger.info(f"处理Offer [客户端初始 ID: {client_id}]")
             
-            # 尝试从SDP中提取会话ID
+            # 从客户端数据中提取真正的客户端ID
+            real_client_id = None
+            
+            # 1. 先尝试从WebSocket的headers中获取device-id
+            device_id_from_header = None
+            if websocket and hasattr(websocket, 'request') and hasattr(websocket.request, 'headers'):
+                headers = dict(websocket.request.headers)
+                if 'device-id' in headers:
+                    device_id_from_header = headers['device-id']
+                    logger.info(f"从WebSocket headers中提取到device-id: {device_id_from_header}")
+            
+            # 2. 从Offer数据中寻找客户端ID
+            if isinstance(offer_data, dict):
+                # 直接检查是否有client_id字段
+                if 'client_id' in offer_data:
+                    real_client_id = offer_data['client_id']
+                    logger.info(f"从Offer数据中提取到client_id: {real_client_id}")
+                    
+                # 检查payload内部
+                elif 'payload' in offer_data and isinstance(offer_data['payload'], dict):
+                    if 'client_id' in offer_data['payload']:
+                        real_client_id = offer_data['payload']['client_id']
+                        logger.info(f"从Offer payload中提取到client_id: {real_client_id}")
+                        
+                # 检查device-id字段
+                elif 'device-id' in offer_data:
+                    real_client_id = offer_data['device-id']
+                    logger.info(f"从Offer数据中提取到device-id: {real_client_id}")
+                    
+            # 3. 如果从 headers 和 offer 中都找到了ID，优先使用 headers 中的
+            if device_id_from_header:
+                if real_client_id and real_client_id != device_id_from_header:
+                    logger.info(f"客户端ID不匹配，使用WebSocket headers中的ID [原始P2P ID: {client_id}, Offer ID: {real_client_id}, WebSocket ID: {device_id_from_header}]")
+                    # 使用WebSocket headers中的device-id作为最终ID
+                    real_client_id = device_id_from_header
+            
+            # 如果找到真实客户端ID，存储映射关系并替换初始的client_id
+            if real_client_id and real_client_id != client_id:
+                logger.info(f"客户端ID不匹配，用最终确定的ID替换 [原始P2P ID: {client_id}, 最终ID: {real_client_id}]")
+                # 保存映射关系，从原始P2P ID映射到最终ID
+                self.client_id_map[client_id] = real_client_id
+                # 替换当前处理中使用的ID
+                client_id = real_client_id
+            
+            # 尝试从 SDP 中提取会话ID
             sdp = offer_data.get("sdp")
             session_id = self.extract_session_id_from_sdp(sdp)
             if session_id:
@@ -880,7 +1034,54 @@ class ConnectionManager:
         Args:
             client_id: 客户端ID
         """
-        logger.warning(f"WebRTC连接失败 [客户端: {client_id}]")
+        await self.close_connection(client_id)
+        logger.warning(f"连接失败处理完成 [客户端: {client_id}]")
+        
+    async def _process_buffered_audio(self, client_id, audio_bytes):
+        """
+        处理缓存的音频数据
+        
+        参数:
+        client_id: 客户端 ID
+        audio_bytes: 音频数据字节
+        """
+        if not audio_bytes or len(audio_bytes) == 0:
+            logger.warning(f"[AUDIOBUFFER] 缓存的音频数据为空 [客户端: {client_id}]")
+            return
+            
+        logger.info(f"[AUDIOBUFFER] 开始处理缓存的音频数据 [客户端: {client_id}, 大小: {len(audio_bytes)} 字节]")
+        
+        try:
+            # 获取WebRTC连接对象
+            if client_id in self.webrtc_connections:
+                webrtc_conn = self.webrtc_connections[client_id]
+                
+                # 检测是否为Opus格式
+                is_opus = False
+                if len(audio_bytes) >= 8:
+                    # 检查Opus头部特征
+                    opus_signature = b'OpusHead'
+                    if audio_bytes[:8] == opus_signature:
+                        is_opus = True
+                        logger.info(f"[AUDIOBUFFER] 检测到Opus格式数据 [客户端: {client_id}]")
+                
+                # 如果是Opus格式，尝试解码（实际环境中可能需要调用opus解码器）
+                if is_opus:
+                    logger.info(f"[AUDIOBUFFER] 检测到Opus格式，使用原始数据 [客户端: {client_id}]")
+                    # 注意：这里只检测格式，实际解码需要额外实现
+                
+                # 调用WebRTC连接对象的内部音频处理方法
+                if hasattr(webrtc_conn, 'process_audio_internal'):
+                    await webrtc_conn.process_audio_internal(audio_bytes)
+                    logger.info(f"[AUDIOBUFFER] 已将缓存音频数据传递给VAD/ASR处理 [客户端: {client_id}]")
+                else:
+                    logger.warning(f"[AUDIOBUFFER] WebRTC连接对象缺少process_audio_internal方法 [客户端: {client_id}]")
+            else:
+                logger.warning(f"[AUDIOBUFFER] 找不到客户端的WebRTC连接对象 [客户端: {client_id}]")
+        except Exception as e:
+            logger.error(f"[AUDIOBUFFER] 处理缓存音频数据时出错 [客户端: {client_id}]: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         # 这里可以实现重连逻辑，或者通知客户端切换到备用通信方式
     
     # 简化设计，移除了注册连接的方法
@@ -1009,6 +1210,34 @@ class ConnectionManager:
         logger.error(f"[重试机制] 多次尝试发送Answer均失败 [客户端: {client_id}, 最大尝试次数: {max_retries}]")
         return False
         
+    def get_real_client_id(self, client_id):
+        """
+        获取客户端的真实客户端ID
+        
+        参数:
+        client_id: 原始客户端ID（可能是P2P连接生成的UUID）
+        
+        返回:
+        真实客户端ID（通常是device-id）
+        """
+        # 如果在映射表中存在，返回映射的真实客户端ID
+        if client_id in self.client_id_map:
+            mapped_id = self.client_id_map[client_id]
+            logger.debug(f"使用映射关系转换客户端ID [原始: {client_id}, 真实: {mapped_id}]")
+            return mapped_id
+            
+        # 如果在会话map中存在，使用会话映射
+        for session_id, mapped_client_id in self.session_map.items():
+            if mapped_client_id == client_id:
+                # 检查这个映射的客户端ID是否已经有进一步的映射
+                if mapped_client_id in self.client_id_map:
+                    final_id = self.client_id_map[mapped_client_id]
+                    logger.debug(f"通过会话映射关系转换客户端ID [原始: {client_id}, 会话ID: {session_id}, 真实: {final_id}]")
+                    return final_id
+        
+        # 如果没有映射关系，返回原始客户端ID
+        return client_id
+            
     async def close_all_connections(self):
         """关闭所有连接"""
         logger.info("关闭所有WebRTC连接...")
