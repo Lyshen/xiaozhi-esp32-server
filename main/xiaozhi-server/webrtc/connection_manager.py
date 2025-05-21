@@ -119,16 +119,55 @@ class ConnectionManager:
             logger.info(f"数据通道已创建 [客户端: {client_id}, 通道: {channel_id}]")
             self.data_channels[f"{client_id}_{channel_id}"] = channel
             
+            # 初始化消息计数器
+            msg_count = 0
+            json_bytes = 0
+            bin_bytes = 0
+            last_log_time = time.time()
+            
             @channel.on("message")
             def on_message(message):
+                nonlocal msg_count, json_bytes, bin_bytes, last_log_time
+                msg_count += 1
+                current_time = time.time()
+                
+                # 处理JSON字符串消息
                 if isinstance(message, str):
                     try:
                         data = json.loads(message)
-                        logger.info(f"收到数据通道消息 [客户端: {client_id}, 通道: {channel_id}]: {data}")
+                        msg_size = len(message)
+                        json_bytes += msg_size
+                        
+                        # 音频数据包特殊处理
+                        if 'id' in data and 'data' in data and 'sampleRate' in data:
+                            # 音频数据包只每100个输出一次日志
+                            if msg_count % 100 == 1 or (current_time - last_log_time) > 10:
+                                logger.info(f"[DATACHANNEL] 音频数据包统计 [客户端: {client_id}]: "
+                                          f"计数: {msg_count}, 音频包ID: {data['id']}, "
+                                          f"采样率: {data['sampleRate']}Hz, "
+                                          f"JSON字节数: {json_bytes}")
+                                last_log_time = current_time
+                        # 控制命令始终输出日志
+                        elif 'command' in data:
+                            logger.info(f"[DATACHANNEL] 收到控制命令 [客户端: {client_id}]: {data['command']}")
+                        # 其他普通JSON消息
+                        else:
+                            logger.info(f"[DATACHANNEL] 收到JSON消息 [客户端: {client_id}]: {data}")
                     except json.JSONDecodeError:
-                        logger.info(f"收到数据通道消息 [客户端: {client_id}, 通道: {channel_id}]: {message}")
+                        # 非JSON格式字符串只每100个输出一次
+                        if msg_count % 100 == 1:
+                            logger.info(f"[DATACHANNEL] 收到非JSON字符串 [客户端: {client_id}]: {message[:50]}...")
+                # 处理二进制消息
                 else:
-                    logger.info(f"收到数据通道二进制消息 [客户端: {client_id}, 通道: {channel_id}]: {len(message)} 字节")
+                    msg_size = len(message)
+                    bin_bytes += msg_size
+                    
+                    # 二进制消息只每100个输出一次日志
+                    if msg_count % 100 == 1 or (current_time - last_log_time) > 10:
+                        logger.info(f"[DATACHANNEL] 二进制消息统计 [客户端: {client_id}]: "
+                                  f"计数: {msg_count}, 当前大小: {msg_size} 字节, "
+                                  f"累计二进制字节数: {bin_bytes}")
+                        last_log_time = current_time
         
         # 设置音频/视频轨道回调
         @pc.on("track")
