@@ -139,27 +139,29 @@ class AudioFrameHandler:
             
             # 移除对frame进行深度复制的尝试，因为AudioFrame对象不支持深度复制
             
-            # 1. 检查是否为Opus格式，如果是，尝试保留原始Opus编码数据
+            # 1. 检查帧格式，优先保留原始编码数据而不解码
             original_opus_data = None
             is_opus_format = hasattr(frame, 'format') and frame.format and frame.format.name.lower() == 'opus'
             
-            if is_opus_format and hasattr(frame, 'planes') and frame.planes:
+            # 无论格式如何，都尝试直接保留原始编码数据
+            if hasattr(frame, 'planes') and frame.planes:
                 try:
-                    # 保留原始Opus编码数据
+                    # 保留原始编码数据，不进行解码
                     original_opus_data = bytes(frame.planes[0])
                     if counter == 1 or counter % 100 == 0:
-                        logger.info(f"[P2P-DATA] 成功提取Opus编码数据，数据包 #{counter}，大小: {len(original_opus_data)} 字节")
+                        logger.info(f"[P2P-DATA] 成功提取原始编码数据，数据包 #{counter}，格式: {frame_format}，大小: {len(original_opus_data)} 字节")
+                        logger.info(f"[P2P-DATA] 直接传递原始编码数据到后续处理流程，不进行解码")
                 except Exception as e:
-                    logger.warning(f"[P2P-DATA] 提取Opus数据失败: {e}，回退到PCM转换")
+                    logger.warning(f"[P2P-DATA] 提取原始编码数据失败: {e}，将回退到PCM转换")
                     original_opus_data = None
         
-            # 2. 如果需要PCM格式（用于调试或其他处理），但不用于VAD/ASR
+            # 2. 只在无法获取原始编码数据时才进行PCM转换（作为后备方案）
             pcm_data = None
-            if not is_opus_format or original_opus_data is None:
-                # 只有非Opus格式或无法提取原始Opus数据时才转换为PCM
+            if original_opus_data is None:
+                logger.warning(f"[P2P-DATA] 无法获取原始编码数据，尝试PCM转换作为后备方案")
                 pcm_data = await self.convert_audio_to_pcm(frame)
                 if counter == 1 or counter % 100 == 0:
-                    logger.info(f"[P2P-DATA] PCM转换完成，数据包 #{counter}，大小: {len(pcm_data)} 字节")
+                    logger.info(f"[P2P-DATA] PCM转换完成（后备方案），数据包 #{counter}，大小: {len(pcm_data)} 字节")
                 self.audio_bytes_counters[client_id] += len(pcm_data)
             else:
                 self.audio_bytes_counters[client_id] += len(original_opus_data)
@@ -176,12 +178,20 @@ class AudioFrameHandler:
                 webrtc_connections[client_id] = conn
                 logger.info(f"[P2P-DATA] 创建新的WebRTC连接对象，客户端ID: {client_id}")
         
-            # 4. 将音频数据添加到ASR缓冲区 - 优先使用原始Opus数据
+            # 4. 将原始编码音频数据添加到ASR缓冲区，并保留格式信息
             audio_data_for_asr = original_opus_data if original_opus_data is not None else pcm_data
             if audio_data_for_asr is not None:
-                conn.asr_audio.append(audio_data_for_asr)
+                # 存储音频数据的原始格式信息，以便后续处理时使用
+                audio_data_with_format = {
+                    'data': audio_data_for_asr,
+                    'format': frame_format,
+                    'is_encoded': original_opus_data is not None,
+                    'timestamp': time.time()
+                }
+                conn.asr_audio.append(audio_data_with_format)
                 if counter % 100 == 0:
-                    logger.info(f"[P2P-DATA] 音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
+                    format_type = '原始编码' if original_opus_data is not None else 'PCM'
+                    logger.info(f"[P2P-DATA] {format_type}音频数据已添加到ASR缓冲区，客户端: {client_id}, 包 #{counter}, 当前已收集 {len(conn.asr_audio)} 段音频")
             
             # 4. 音频包计数器
             packet_counter = self.audio_packet_counters[client_id]
@@ -225,7 +235,17 @@ class AudioFrameHandler:
                 
                 # 直接调用ASR接口处理累积的音频数据
                 try:
-                    text, extra_info = await conn.asr.speech_to_text(conn.asr_audio, conn.session_id)
+                    # 提取音频数据，保留原始格式
+                    raw_audio_data = [item['data'] if isinstance(item, dict) else item for item in conn.asr_audio]
+                    
+                    # 检查第一个元素是否包含格式信息
+                    has_format_info = len(conn.asr_audio) > 0 and isinstance(conn.asr_audio[0], dict) and 'format' in conn.asr_audio[0]
+                    if has_format_info and conn.asr_audio[0]['format'].lower() == 'opus':
+                        logger.info(f"[SERVER-AUDIO] 正在处理原始Opus编码的音频数据 ({len(raw_audio_data)} 段)")
+                    else:
+                        logger.info(f"[SERVER-AUDIO] 处理音频数据 ({len(raw_audio_data)} 段)，格式: {'原始格式' if has_format_info else 'PCM/未知'}")
+                    
+                    text, extra_info = await conn.asr.speech_to_text(raw_audio_data, conn.session_id)
                     logger.warning(f"[SERVER-AUDIO] ASR识别结果: '{text}'")
                     
                     # 处理识别文本
@@ -252,19 +272,38 @@ class AudioFrameHandler:
                             vad = builtins_conn.vad
                             print("[VAD-DEBUG] 开始调用VAD识别")
                             
-                            # 使用原始音频数据（可能是Opus格式）进行VAD检测
-                            if client_id in self.original_frames and self.original_frames[client_id]:
-                                raw_frame = self.original_frames[client_id][-1]
-                                if hasattr(raw_frame, 'planes') and raw_frame.planes:
-                                    opus_data = bytes(raw_frame.planes[0])
-                                    # 传递原始Opus数据给VAD模块
-                                    vad_result = await vad.is_vad(opus_data, builtins_conn)  # VAD检测
+                            # 直接使用最近收集的原始编码数据进行VAD检测
+                            try:
+                                if len(conn.asr_audio) > 0:
+                                    # 获取最近一段音频数据
+                                    last_audio = conn.asr_audio[-1]
+                                    
+                                    if isinstance(last_audio, dict) and 'data' in last_audio:
+                                        # 使用保存的格式化音频数据
+                                        audio_for_vad = last_audio['data']
+                                        is_encoded = last_audio.get('is_encoded', False)
+                                        format_type = last_audio.get('format', 'unknown')
+                                        
+                                        logger.info(f"[VAD-DEBUG] 使用{'原始编码' if is_encoded else 'PCM'}数据进行VAD检测，格式:{format_type}")
+                                        vad_result = await vad.is_vad(audio_for_vad, builtins_conn)
+                                    else:
+                                        # 兼容旧格式，直接使用数据
+                                        logger.info(f"[VAD-DEBUG] 使用未格式化的音频数据进行VAD检测")
+                                        vad_result = await vad.is_vad(last_audio, builtins_conn)
                                 else:
-                                    # 回退到PCM数据
-                                    vad_result = await vad.is_vad(audio_array, builtins_conn)  # VAD检测
-                            else:
-                                # 回退到PCM数据
-                                vad_result = await vad.is_vad(audio_array, builtins_conn)  # VAD检测
+                                    # 如果没有收集到音频数据，尝试使用当前帧
+                                    if original_opus_data is not None:
+                                        logger.info(f"[VAD-DEBUG] 没有收集到音频数据，使用当前帧的原始编码数据")
+                                        vad_result = await vad.is_vad(original_opus_data, builtins_conn)
+                                    elif audio_array is not None:
+                                        logger.info(f"[VAD-DEBUG] 没有收集到音频数据，使用当前帧的PCM数据")
+                                        vad_result = await vad.is_vad(audio_array, builtins_conn)
+                                    else:
+                                        logger.warning(f"[VAD-DEBUG] 没有可用的音频数据进行VAD检测")
+                                        vad_result = None
+                            except Exception as vad_error:
+                                logger.error(f"[VAD-ERROR] VAD处理失败: {vad_error}")
+                                vad_result = None
                                 
                             if counter % 100 == 0 or vad_result is not None:
                                 logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{counter}，结果: {vad_result}")
@@ -291,11 +330,17 @@ class AudioFrameHandler:
                     # 使用正确的音频数据格式调用VAD处理逻辑
                     audio_data_for_vad = original_opus_data if is_opus_format and original_opus_data is not None else pcm_data
                     
-                    if packet_counter % 100 == 0:
-                        format_type = "Opus" if is_opus_format and original_opus_data is not None else "PCM"
-                        logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，格式: {format_type}，音频长度: {len(audio_data_for_vad)} 字节")
-                    
-                    result = await process_audio_internal(conn, audio_data_for_vad)
+                    # 检查音频数据是否为None，避免传递None数据给VAD
+                    if audio_data_for_vad is None:
+                        logger.warning(f"[P2P-DATA] 无可用音频数据，跳过VAD处理，数据包 #{packet_counter}")
+                        result = None
+                    else:
+                        if packet_counter % 100 == 0:
+                            format_type = "Opus" if is_opus_format and original_opus_data is not None else "PCM"
+                            logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，格式: {format_type}，音频长度: {len(audio_data_for_vad)} 字节")
+                        
+                        # 传递有效的音频数据给VAD处理函数
+                        result = await process_audio_internal(conn, audio_data_for_vad)
                     if packet_counter % 100 == 0 or result is not None:
                         logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{packet_counter}，结果: {result}")
                 except ImportError as e:

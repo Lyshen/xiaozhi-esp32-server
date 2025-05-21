@@ -56,6 +56,11 @@ class VADHelper:
         try:
             self._ensure_vad_loaded()
             
+            # 首先检查音频数据是否为None
+            if audio is None:
+                logger.warning("[VAD-DEBUG] 音频数据为None，无法处理")
+                return False
+                
             # 记录音频信息
             #logger.info(f"[VAD-DEBUG] VAD检测音频，长度: {len(audio)} 字节")
             
