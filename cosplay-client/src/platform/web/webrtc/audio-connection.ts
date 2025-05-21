@@ -16,17 +16,24 @@ export class WebRTCAudioConnection {
   private state: WebRTCConnectionState = WebRTCConnectionState.NEW;
   private pendingCandidates: RTCIceCandidate[] = [];
   private isInitiator: boolean = false;
-  private instanceId: string = `webrtc_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+  private sessionId: string = '';
+  private instanceId: string = '';
 
   /**
    * 构造函数
    * @param config WebRTC配置
    */
   constructor(config: WebRTCConfig) {
-    console.log(`[DEBUG] WebRTCAudioConnection constructor called, instance ID: ${this.instanceId}`);
+    // 生成一个强UUID作为会话标识符
+    this.sessionId = this.generateStrongUUID();
+    this.instanceId = `webrtc_${this.sessionId}`;
+    
+    console.log(`[DEBUG] WebRTCAudioConnection constructor called, session ID: ${this.sessionId}, instance ID: ${this.instanceId}`);
     this.config = config;
     this.eventEmitter = new EventEmitter();
-    this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter);
+    
+    // 使用同一个sessionId创建信令客户端
+    this.signalingClient = new SignalingClient(config.signalingUrl, this.eventEmitter, this.sessionId);
     this.mediaManager = new MediaManager(this.eventEmitter);
     
     // 关键修复：将SignalingClient实例设置到MediaManager
@@ -199,11 +206,14 @@ export class WebRTCAudioConnection {
       this.isInitiator = true;
       console.log(`WebRTCAudioConnection[${this.instanceId}]: 开始创建Offer`);
       
-      // 创建offer
-      const offer = await this.peerConnection.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: false
-      });
+      // 创建SDP offer，并在SDP中添加会话ID
+      const offer = await this.peerConnection.createOffer();
+      
+      // 在SDP中注入会话ID以确保服务端能识别该连接
+      const modifiedOffer = {
+        ...offer,
+        sdp: offer.sdp + '\na=session-id:' + this.sessionId
+      };
       
       console.log(`WebRTCAudioConnection[${this.instanceId}]: Offer创建成功，设置本地描述`);
       
@@ -436,5 +446,27 @@ export class WebRTCAudioConnection {
    */
   public getInstanceId(): string {
     return this.instanceId;
+  }
+  
+  /**
+   * 获取会话 ID
+   * @returns 会话 ID
+   */
+  public getSessionId(): string {
+    return this.sessionId;
+  }
+  
+  /**
+   * 生成强UUID
+   * 使用标准UUID v4格式
+   * @returns UUID字符串
+   */
+  private generateStrongUUID(): string {
+    // RFC4122 v4 UUID实现
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
   }
 }

@@ -27,21 +27,30 @@ export class SignalingClient {
   private messagesSent: number = 0;
   private messagesReceived: number = 0;
   private instanceId: string = Math.random().toString(36).substring(2, 9);
+  private sessionId: string;
 
   /**
    * 构造函数
    * @param url 信令服务器URL
    * @param eventEmitter 事件发射器
+   * @param sessionId 可选的会话ID，用于在信令和WebRTC连接间保持一致的身份
    */
-  constructor(url: string, eventEmitter: EventEmitter) {
+  constructor(url: string, eventEmitter: EventEmitter, sessionId?: string) {
     this.url = url;
     this.eventEmitter = eventEmitter;
+    
+    // 使用提供的sessionId或生成新的客户端ID
+    const clientId = sessionId || this.generateClientId();
+    
     // 添加客户端ID作为URL参数，如果URL中已有参数，则添加&，否则添加?
     if (this.url.indexOf('?') === -1) {
-      this.url = `${this.url}?client_id=${this.generateClientId()}`;
+      this.url = `${this.url}?client_id=${clientId}`;
     } else {
-      this.url = `${this.url}&client_id=${this.generateClientId()}`;
+      this.url = `${this.url}&client_id=${clientId}`;
     }
+    
+    // 保存会话ID，用于后续通信
+    this.sessionId = clientId;
     console.log(`SignalingClient[${this.instanceId}]: 初始化，URL配置为 ${this.url}`);
   }
 

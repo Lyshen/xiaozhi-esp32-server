@@ -87,12 +87,38 @@ class AudioFrameHandler:
             self.audio_packet_counters[client_id] += 1
             counter = self.audio_packet_counters[client_id]
             
-            # 添加明确的日志 - 记录开始处理音频
-            # 减少日志输出，只在每100个包输出一次或者是第一个包
-            if counter == 1 or counter % 100 == 0:
-                logger.info(f"[P2P-DATA] 接收音频包 #{counter} 来自客户端 {client_id}, 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-                # 尝试获取并记录WebRTC统计信息
-                if client_id in webrtc_connections and webrtc_connections[client_id].pc:
+            # 每个音频帧都记录日志，增强了日志输出
+            pcm_data_size = 0
+            frame_format = "unknown"
+            sample_rate = "unknown"
+            
+            # 获取帧数据信息
+            if hasattr(frame, 'format') and frame.format:
+                frame_format = frame.format.name
+            if hasattr(frame, 'sample_rate'):
+                sample_rate = frame.sample_rate
+                
+            # 转换音频数据为PCM和计算大小
+            try:
+                audio_array = None
+                if hasattr(frame, 'to_ndarray'):
+                    audio_array = frame.to_ndarray()
+                    pcm_data_size = len(audio_array.tobytes()) if audio_array.size > 0 else 0
+                elif hasattr(frame, 'planes') and frame.planes:
+                    pcm_data_size = len(frame.planes[0])
+            except Exception as e:
+                logger.error(f"[P2P-RX-ERROR] 转换音频数据出错: {e}")
+                
+            # 累计已收到的字节数
+            self.audio_bytes_counters[client_id] = self.audio_bytes_counters.get(client_id, 0) + pcm_data_size
+            
+            # 每10个包输出一次详细日志，增加日志频率
+            if counter == 1 or counter % 10 == 0:
+                logger.info(f"[P2P-DATA] 包 #{counter}: 客户端={client_id}, 格式={frame_format}, 采样率={sample_rate}Hz, "
+                         f"大小={pcm_data_size} 字节, 累计={self.audio_bytes_counters[client_id]} 字节")
+                
+            # 每50个包输出详细的WebRTC连接统计信息
+            if counter % 50 == 0 and client_id in webrtc_connections and webrtc_connections[client_id].pc:
                     pc = webrtc_connections[client_id].pc
                     try:
                         # 异步获取统计信息

@@ -142,45 +142,59 @@ export class MediaManager {
    * @param event 音频处理事件
    */
   private handleAudioProcess(event: AudioProcessingEvent): void {
-    if (!this.isProcessing) return;
-
-    // 获取输入缓冲区
-    const inputBuffer = event.inputBuffer;
-    const inputData = inputBuffer.getChannelData(0);
-
-    // 检查ICE连接状态
-    let isConnected = false;
-    if (this.peerConnection) {
-      isConnected = ['connected', 'completed'].includes(this.peerConnection.iceConnectionState);
-      
-      // 每100个包才记录一次连接状态，减少日志输出
-      if (this.audioPacketCounter % 100 === 0) {
-        console.log(`[CLIENT-CONNECTION] ICE状态: ${this.peerConnection.iceConnectionState}, 连接状态: ${this.peerConnection.connectionState || 'unknown'}`);
+    try {
+      if (!this.isProcessing) {
+        return; // 如果没有在处理音频，直接返回
       }
-    }
-    
-    // 更新连接状态
-    this.webrtcConnected = isConnected;
 
-    // 转换为16bit PCM
-    const pcmData = this.floatTo16BitPCM(inputData);
-    const audioDataToSend = pcmData.buffer;
-    
-    // 每100个包打印一次音频格式信息，减少日志输出
-    if (this.audioPacketCounter === 0 || this.audioPacketCounter % 100 === 0) {
-      console.log(`[CLIENT-AUDIO] 音频包 #${this.audioPacketCounter}, 采样率: ${inputBuffer.sampleRate}Hz, 大小: ${audioDataToSend.byteLength}字节`);
+      // 获取输入缓冲区中的所有音频数据
+      const inputData = event.inputBuffer.getChannelData(0);
+      
+      // 转换为16位整数
+      const pcmData = this.floatTo16BitPCM(inputData);
+      
+      // 如果有回调，将数据发送给回调
+      if (this.audioCallback) {
+        // 增加包计数器
+        this.audioPacketCounter++;
+        
+        // 更详细的日志，记录音频数据发送情况
+        const pcmDataSize = pcmData.buffer.byteLength;
+        const now = Date.now();
+        
+        // 检查WebRTC连接状态
+        let webrtcState = '未连接';
+        let iceState = '未知';
+        if (this.peerConnection) {
+          webrtcState = this.webrtcConnected ? '已连接' : '连接中';
+          iceState = this.peerConnection.iceConnectionState;
+        }
+        
+        // 每20个包输出一次详细日志，或者每5秒输出一次
+        const logInterval = 5000; // 5秒
+        //if (this.audioPacketCounter % 20 === 0 || now - this.lastLogTime > logInterval) {
+          console.log(`[P2P-TX-DEBUG] 音频包 #${this.audioPacketCounter} 准备发送: ` + 
+                     `采样率=${event.inputBuffer.sampleRate}Hz, ` +
+                     `大小=${pcmDataSize} 字节, ` +
+                     `WebRTC状态=${webrtcState}, ` +
+                     `ICE状态=${iceState}`);
+          this.lastLogTime = now;
+        //}
+        
+        // 在音频数据发送前记录日志
+        //if (this.audioPacketCounter === 1 || this.audioPacketCounter % 100 === 0) {
+          console.log(`[CLIENT-AUDIO] 音频包 #${this.audioPacketCounter}, 采样率: ${event.inputBuffer.sampleRate}Hz, 大小: ${pcmDataSize} 字节`);
+        //}
+        
+        // 发送数据到回调
+        this.audioCallback(pcmData.buffer);
+        
+        // 发出事件
+        this.eventEmitter.emit(WebRTCEvent.AUDIO_SENT, pcmData.buffer);
+      }
+    } catch (error) {
+      console.error('[P2P-TX-ERROR] 处理音频数据错误:', error);
     }
-    
-    // 增加音频包计数
-    this.audioPacketCounter++;
-    
-    // 如果设置了回调，则调用回调
-    if (this.audioCallback) {
-      this.audioCallback(audioDataToSend);
-    }
-
-    // 发出事件
-    this.eventEmitter.emit(WebRTCEvent.AUDIO_SENT, audioDataToSend);
   }
 
   /**

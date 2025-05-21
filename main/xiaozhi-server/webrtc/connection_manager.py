@@ -44,6 +44,9 @@ class ConnectionManager:
         self.audio_processors = {}  # client_id -> AudioTrackProcessor
         self.pending_candidates = {}  # client_id -> [candidates]
         
+        # 会话ID映射表 - 将WebRTC会话ID映射到客户端ID
+        self.session_map = {}  # session_id -> client_id
+        
         # 存储客户端的音频处理统计信息
         self.client_stats = {}  # client_id -> stats dict
         
@@ -129,9 +132,14 @@ class ConnectionManager:
         
         # 设置音频/视频轨道回调
         @pc.on("track")
-        def on_track(track):
+        async def on_track(track):
             if track.kind == "audio":
-                logger.info(f"收到音频轨道 [客户端: {client_id}]")
+                # 检查是否有会话ID关联
+                session_ids = [sid for sid, cid in self.session_map.items() if cid == client_id]
+                if session_ids:
+                    logger.info(f"收到音频轨道 [客户端: {client_id}, 会话ID: {session_ids[0]}]")
+                else:
+                    logger.info(f"收到音频轨道 [客户端: {client_id}]")
                 
                 # 创建处理音频帧的回调函数
                 async def frame_callback(frame):
@@ -267,17 +275,25 @@ class ConnectionManager:
         try:
             logger.info(f"处理Offer [客户端: {client_id}]")
             
-            # 首先尝试关联WebSocket，确保后续操作可以使用它
-            if websocket:
-                # 检查WebSocket是否可用
-                if self.is_websocket_open(websocket):
-                    # 立即关联WebSocket到连接
-                    await self.associate_websocket(client_id, websocket)
-                    logger.info(f"在处理Offer前已关联WebSocket [客户端: {client_id}]")
+            # 尝试从SDP中提取会话ID
+            sdp = offer_data.get("sdp")
+            session_id = self.extract_session_id_from_sdp(sdp)
+            if session_id:
+                logger.info(f"从Offer SDP中提取到会话ID: {session_id} [客户端: {client_id}]")
+                # 建立会话ID和客户端ID的映射关系
+                self.session_map[session_id] = client_id
+                
+                # 首先尝试关联WebSocket，确保后续操作可以使用它
+                if websocket:
+                    # 检查WebSocket是否可用
+                    if self.is_websocket_open(websocket):
+                        # 立即关联WebSocket到连接
+                        await self.associate_websocket(client_id, websocket)
+                        logger.info(f"在处理Offer前已关联WebSocket [客户端: {client_id}]")
+                    else:
+                        logger.warning(f"传入的WebSocket不可用，无法关联 [客户端: {client_id}]")
                 else:
-                    logger.warning(f"传入的WebSocket不可用，无法关联 [客户端: {client_id}]")
-            else:
-                logger.warning(f"无可用的WebSocket连接传入handle_offer [客户端: {client_id}]")
+                    logger.warning(f"无可用的WebSocket连接传入handle_offer [客户端: {client_id}]")
             
             # 1. 解析offer_data
             type_ = None
@@ -663,6 +679,41 @@ class ConnectionManager:
         # 使用PyAV将音频帧转换为NumPy数组，再转为bytes
         ndarray = frame.to_ndarray()
         return ndarray.tobytes()
+        
+    def extract_session_id_from_sdp(self, sdp):
+        """
+        从SDP中提取会话ID
+        
+        Args:
+            sdp: SDP字符串
+            
+        Returns:
+            str: 提取到的会话ID，如果没有则返回None
+        """
+        if not sdp:
+            return None
+            
+        # 寻找自定义的session-id属性
+        lines = sdp.split("\n")
+        for line in lines:
+            if line.startswith("a=session-id:"):
+                session_id = line.split(":", 1)[1].strip()
+                logger.info(f"从SDP中提取到会话ID: {session_id}")
+                return session_id
+                
+        return None
+        
+    def get_client_id_by_session(self, session_id):
+        """
+        通过会话ID查找对应的客户端ID
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            str: 客户端ID，如果没有找到则返回None
+        """
+        return self.session_map.get(session_id)
     
     async def associate_websocket(self, client_id, websocket):
         """
@@ -730,13 +781,59 @@ class ConnectionManager:
         frame: 音频帧
         client_id: 客户端 ID
         """
-        # 如果未初始化AudioFrameHandler，则创建一个实例
-        if not hasattr(self, 'audio_frame_handler'):
-            self.audio_frame_handler = AudioFrameHandler()
+        # 初始化计数器
+        if client_id not in self.audio_packet_counters:
+            self.audio_packet_counters[client_id] = 0
+            self.audio_bytes_counters[client_id] = 0
+            self.last_log_time[client_id] = time.time()
+        
+        # 增加包计数器
+        self.audio_packet_counters[client_id] += 1
+        frame_counter = self.audio_packet_counters[client_id]
+        
+        # 计算帧大小
+        frame_size = 0
+        if hasattr(frame, 'planes') and frame.planes:
+            frame_size = len(frame.planes[0])
+        elif hasattr(frame, 'to_ndarray'):
+            try:
+                frame_size = len(frame.to_ndarray().tobytes())
+            except Exception as e:
+                frame_size = 0
+        
+        # 累计字节数
+        self.audio_bytes_counters[client_id] += frame_size
+        
+        # 详细记录每个帧的信息
+        if frame_counter % 100 == 1:  # 每100个帧输出一次详细日志
+            logger.info(f"[P2P-RX-DEBUG] WebRTC收到音频帧 #{frame_counter} [客户端: {client_id}], "
+                     f"格式: {frame.format.name if hasattr(frame, 'format') else 'unknown'}, "
+                     f"采样率: {frame.sample_rate if hasattr(frame, 'sample_rate') else 'unknown'}Hz, "
+                     f"大小: {frame_size} 字节, 累计: {self.audio_bytes_counters[client_id]} 字节")
+        
+        # 先检查直接关联
+        if client_id in self.webrtc_connections:
+            conn = self.webrtc_connections[client_id]
+            await conn.process_audio_frame(frame)
+        else:
+            # 尝试通过会话ID查找关联
+            mapped_client_found = False
+            for session_id, mapped_client_id in self.session_map.items():
+                if mapped_client_id in self.webrtc_connections:
+                    logger.info(f"[会话ID映射] 将音频帧重定向到客户端 {mapped_client_id} (会话ID: {session_id})")
+                    conn = self.webrtc_connections[mapped_client_id]
+                    await conn.process_audio_frame(frame)
+                    mapped_client_found = True
+                    break
             
-        # 调用AudioFrameHandler处理音频帧
-        return await self.audio_frame_handler.process_audio_frame(frame, client_id, self.webrtc_connections)
-
+            if not mapped_client_found:
+                logger.warning(f"[P2P-RX-WARNING] 没有找到客户端的WebRTC连接 [客户端: {client_id}]")
+                # 记录现有的映射数据以便于调试
+                if self.session_map:
+                    logger.debug(f"现有会话ID映射: {self.session_map}")
+                if self.webrtc_connections:
+                    logger.debug(f"现有活跃连接: {list(self.webrtc_connections.keys())}")
+    
     async def handle_connection_failure(self, client_id):
         """
         处理连接失败
