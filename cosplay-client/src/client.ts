@@ -274,10 +274,20 @@ export class CosplayClient {
   private onAudioData(data: ArrayBuffer): void {
     if (this.connection.getState() === ConnectionState.CONNECTED && 
         this.listeningState === ListeningState.LISTENING) {
-      // 直接发送音频数据
-      this.connection.sendBinary(data).catch(error => {
-        console.error('Failed to send audio data:', error);
-      });
+      // 检查是否使用WebRTC - 如果是，不通过WebSocket 8000端口发送PCM音频数据
+      const useWebRTC = this.config.audioConfig?.useWebRTC === true;
+      
+      if (!useWebRTC) {
+        // 暂时注释掉普通WebSocket音频数据发送，但保留代码结构以便将来恢复
+        console.log('[DEBUG] 暂时忽略通过WebSocket发送的音频数据，使用WebRTC传输');
+        // this.connection.sendBinary(data).catch(error => {
+        //   console.error('Failed to send audio data:', error);
+        // });
+      } else {
+        // 当使用WebRTC时，无需在这里发送数据，因为WebRTC会使用单独的数据通道
+        // WebRTC的PCM音频数据会通过MediaStreamTrack直接传输
+        console.log('[DEBUG] 使用WebRTC传输音频数据，跳过WebSocket传输');
+      }
     }
   }
   
