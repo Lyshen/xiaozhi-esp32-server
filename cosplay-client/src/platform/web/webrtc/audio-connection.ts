@@ -67,22 +67,22 @@ export class WebRTCAudioConnection {
         this.mediaManager.setPeerConnection(this.peerConnection);
       }
       
-      // 重要：在创建offer之前创建DataChannel（WebRTC必须在offer中包含通道信息）
-      console.log(`WebRTCAudioConnection[${this.instanceId}]: 在创建offer前创建DataChannel`);
+      // 注意：不再使用DataChannel传输音频数据，改为使用标准MediaStream API
+      // 创建一个控制通道用于传递简单命令和状态
+      console.log(`WebRTCAudioConnection[${this.instanceId}]: 创建控制信令通道`);
       try {
-        const dataChannel = this.peerConnection.createDataChannel('audioData', {
+        const controlChannel = this.peerConnection.createDataChannel('control', {
           ordered: true,  // 有序传输
-          maxRetransmits: 10  // 最多重传10次
+          maxRetransmits: 5   // 最多重传5次
         });
         
-        console.log(`WebRTCAudioConnection[${this.instanceId}]: DataChannel已创建, ID: ${dataChannel.id}, 状态: ${dataChannel.readyState}`);
+        console.log(`WebRTCAudioConnection[${this.instanceId}]: 控制通道已创建, ID: ${controlChannel.id}, 状态: ${controlChannel.readyState}`);
         
-        // 将DataChannel传递给MediaManager
-        if (this.mediaManager) {
-          this.mediaManager.setDataChannel(dataChannel);
-        }
+        // 不再将DataChannel传递给MediaManager用于音频传输
+        // MediaManager现在使用标准音频轨道进行音频传输
       } catch (e) {
-        console.error(`WebRTCAudioConnection[${this.instanceId}]: 创建DataChannel失败:`, e);
+        console.error(`WebRTCAudioConnection[${this.instanceId}]: 创建控制通道失败:`, e);
+        // 控制通道失败不影响音频传输，可以继续
       }
       
       console.log(`WebRTCAudioConnection[${this.instanceId}]: RTCPeerConnection已创建, ICE服务器数量: ${this.config.iceServers.length}`);
@@ -90,7 +90,7 @@ export class WebRTCAudioConnection {
       // 设置连接事件监听
       this.setupPeerConnectionListeners();
       
-      // 添加音频transceiver - WebRTC会自动使用最佳的编解码器
+      // 附录音频transceiver - WebRTC会自动使用最佳的编解码器
       this.peerConnection.addTransceiver('audio', {
         direction: 'sendrecv'
       });
@@ -108,15 +108,10 @@ export class WebRTCAudioConnection {
         video: false
       });
 
-      // 初始化音频处理
+      // 初始化音频处理 - MediaManager将在内部自动添加轨道
       this.mediaManager.initAudioProcessing(this.config.sampleRate || 16000);
-
-      // 将音频轨道添加到对等连接
-      stream.getAudioTracks().forEach(track => {
-        if (this.peerConnection) {
-          this.peerConnection.addTrack(track, stream);
-        }
-      });
+      
+      // 注意: 不要在这里重复添加轨道，因为MediaManager.initAudioProcessing已经添加了轨道
 
       // 连接到信令服务器
       console.log(`WebRTCAudioConnection[${this.instanceId}]: 正在连接到信令服务器: ${this.config.signalingUrl}`);
