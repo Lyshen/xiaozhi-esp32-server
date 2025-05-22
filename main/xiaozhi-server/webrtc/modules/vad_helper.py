@@ -65,10 +65,6 @@ class VADHelper:
             if len(audio) == 0:
                 return False
                 
-            # 初始化日志计数器（如果需要）
-            if not hasattr(self, 'vad_log_counter'):
-                self.vad_log_counter = 0
-                
             # 尝试识别音频格式
             try:
                 if audio.startswith(b'OggS') or audio.startswith(b'OpusHead'):
@@ -78,22 +74,20 @@ class VADHelper:
                 
             # 尝试从连接对象获取音频格式信息
             try:
-                if hasattr(conn, 'audio_format') and self.vad_log_counter == 0:
-                    logger.info(f"[VAD-INFO] 连接音频格式: {conn.audio_format}")
-                if hasattr(conn, 'sample_rate') and self.vad_log_counter == 0:
-                    logger.info(f"[VAD-INFO] 连接音频采样率: {conn.sample_rate} Hz")
+                if hasattr(conn, 'audio_format'):
+                    logger.debug(f"[VAD-INFO] 连接音频格式: {conn.audio_format}")
+                if hasattr(conn, 'sample_rate'):
+                    logger.debug(f"[VAD-INFO] 连接音频采样率: {conn.sample_rate} Hz")
             except Exception as conn_err:
                 logger.warning(f"[VAD-INFO] 无法获取连接音频配置: {conn_err}")
             
-            # 每10次输出一次日志
-            self.vad_log_counter = (self.vad_log_counter + 1) % 10
-            if self.vad_log_counter == 0:
-                logger.info(f"[VAD-CALL] 开始调用VAD识别，音频数据长度: {len(audio)} 字节")
+            # 始终记录VAD调用日志，不再使用计数器限制
+            logger.info(f"[VAD-CALL] 开始调用VAD识别，音频数据长度: {len(audio)} 字节")
                 
             is_speech, prob = self.process(audio, conn)
             
-            if self.vad_log_counter == 0:
-                logger.info(f"[VAD-RESULT] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
+            # 始终记录VAD结果日志，不再使用计数器限制
+            logger.info(f"[VAD-RESULT] VAD检测结果: 有语音活动={is_speech}, 概率: {prob}")
             
             # 更新连接状态
             if is_speech:
@@ -176,18 +170,21 @@ class VADHelper:
                 process_buffer = False
                 process_reason = ""
                 
-                # 情况1: 缓冲区达到处理阈值 (6400字节或至少50帧)
-                if total_size >= 6400 or frame_count >= 50:  
+                # 情况1: 缓冲区达到处理阈值 (64000字节或至少500帧)
+                # 记录当前缓冲区状态 - 确保所有状态都被记录
+                logger.info(f"[VAD-BUFFER-STATUS] 当前缓冲状态: {frame_count}帧/{total_size}字节, 阈值: 500帧/64000字节, 上次添加时间: {time.time() - conn.audio_buffer['last_append_time']:.2f}秒前")
+                if total_size >= 64000 or frame_count >= 500:  
                     process_buffer = True
                     process_reason = "达到处理阈值"
                 
                 # 情况2: 缓冲区超时（确保音频不会永远积累不处理）
-                elif time.time() - conn.audio_buffer['last_append_time'] > 1.5 and frame_count > 0:  # 1.5秒超时
+                elif time.time() - conn.audio_buffer['last_append_time'] > 3.0 and frame_count > 0:  # 3秒超时
                     process_buffer = True
                     process_reason = "缓冲区超时"
                 
                 # 如果需要处理缓冲区
                 if process_buffer and frame_count > 0:
+                    logger.info(f"[VAD-BUFFER-PROCESS] 处理原因: {process_reason}, 缓冲区状态: {frame_count}帧/{total_size}字节")
                     try:
                         # 合并音频数据
                         combined_data = b''.join(conn.audio_buffer['data'])
@@ -202,17 +199,21 @@ class VADHelper:
                         conn.audio_buffer['frame_count'] = 0
                         conn.audio_buffer['last_append_time'] = time.time()
                         
-                        # 调用VAD处理
+                        # 调用VAD处理 - 确保一致的日志格式
                         logger.info(f"[VAD-CALL] 调用VAD处理合并音频，数据长度: {combined_size} 字节")
                         is_speech, prob = self.vad.is_speech(combined_data)
+                        
+                        # 记录VAD处理完成
+                        logger.info(f"[VAD-PROCESS-COMPLETED] 已完成VAD处理，结果: is_speech={is_speech}, 概率={prob}, 原因: {process_reason}")
                         
                         # 根据处理原因调整返回值
                         if process_reason == "缓冲区超时" and combined_size < 3200:
                             # 对于短音频的超时处理，稍微提高概率以确保短音频能被后续处理
-                            logger.info(f"[VAD-RESULT] 超时短音频VAD结果: is_speech={is_speech}, 调整后概率={max(0.4, prob)}")
-                            return is_speech, max(0.4, prob)
+                            adjusted_prob = max(0.4, prob)
+                            logger.info(f"[VAD-RESULT] VAD结果: is_speech={is_speech}, 调整前概率={prob}, 调整后概率={adjusted_prob}")
+                            return is_speech, adjusted_prob
                         else:
-                            logger.info(f"[VAD-RESULT] VAD处理结果: is_speech={is_speech}, 概率={prob}")
+                            logger.info(f"[VAD-RESULT] VAD结果: is_speech={is_speech}, 概率={prob}")
                             return is_speech, prob
                     except Exception as e:
                         logger.error(f"[VAD-ERROR] 音频处理失败: {e}")
@@ -223,10 +224,15 @@ class VADHelper:
                 
                 # 如果是新添加的数据（不需要立即处理），返回延迟处理标志
                 if not process_buffer:
+                    # 提高日志级别，确保缓冲状态始终可见
+                    logger.info(f"[VAD-BUFFER] 音频数据已加入缓冲区，待积累足够数据后处理，当前已累积: {frame_count}个片段/{total_size}字节，距离处理阈值还需: {max(0, 500-frame_count)}帧/{max(0, 64000-total_size)}字节")
                     return False, 0.0  # 返回False表示当前未检测到语音，但数据已被累积
             # 缓冲区逻辑结束后，如果没有返回值，返回默认值
-            logger.debug(f"[VAD-INFO] 未处理的音频数据，长度: {len(audio_data)} 字节")
-            return False, 0.0
+            logger.info(f"[VAD-CALL] 单次调用VAD处理音频，长度: {len(audio_data)} 字节")
+            # 直接调用VAD
+            is_speech, prob = self.vad.is_speech(audio_data)
+            logger.info(f"[VAD-RESULT] 单次VAD结果: is_speech={is_speech}, 概率={prob}")
+            return is_speech, prob
         except Exception as e:
             logger.error(f"[VAD-ERROR] VAD处理错误: {str(e)}")
             logger.error(f"[VAD-ERROR] 错误详情: {e.__class__.__name__}: {str(e)}")

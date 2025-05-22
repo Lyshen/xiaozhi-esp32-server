@@ -483,6 +483,9 @@ class AudioFrameHandler:
                     audio_data_for_vad = None
                     vad_format = "unknown"
                     
+                    # 记录VAD处理路径 - 确保我们可以跟踪音频数据的流向
+                    logger.info(f"[VAD-PATH] 准备通过音频帧处理器调用VAD处理，数据包 #{packet_counter}")
+                    
                     # 优先使用原始Opus > 转换的Opus > PCM数据
                     if original_opus_data is not None:
                         audio_data_for_vad = original_opus_data
@@ -502,8 +505,42 @@ class AudioFrameHandler:
                         if packet_counter % 100 == 0:
                             logger.info(f"[P2P-DATA] 正常VAD处理，数据包 #{packet_counter}，格式: {vad_format}，音频长度: {len(audio_data_for_vad)} 字节")
                         
-                        # 传递有效的音频数据给VAD处理函数
-                        result = await process_audio_internal(conn, audio_data_for_vad)
+                        # 确保VAD对象已初始化
+                        if not hasattr(conn, 'vad') or conn.vad is None:
+                            # 初始化VAD对象
+                            from webrtc.modules.vad_helper import VADHelper
+                            conn.vad = VADHelper()
+                            logger.info(f"[VAD-INIT] 为连接 {client_id} 初始化VAD助手")
+                            
+                        # 增加清晰的VAD调用链日志
+                        logger.info(f"[VAD-CHAIN] 数据格式: {vad_format}, 大小: {len(audio_data_for_vad)} 字节, 即将调用VAD处理")
+                            
+                        # 直接调用VAD助手而不是process_audio_internal
+                        # 这确保了所有音频都通过VAD助手处理
+                        try:
+                            # VADHelper.process不是异步方法，直接同步调用
+                            is_speech, prob = conn.vad.process(audio_data_for_vad, conn)
+                            logger.info(f"[VAD-DIRECT-RESULT] 直接VAD处理结果: 有语音={is_speech}, 概率={prob}")
+                            
+                            # 更新连接状态
+                            if is_speech:
+                                conn.client_have_voice = True
+                                conn.vad_speech_count = conn.vad_speech_count + 1 if hasattr(conn, 'vad_speech_count') else 1
+                            else:
+                                conn.vad_silence_count = conn.vad_silence_count + 1 if hasattr(conn, 'vad_silence_count') else 1
+                                
+                                # 如果连续静音超过一定阈值，可能声音结束
+                                if getattr(conn, 'vad_silence_count', 0) > 5 and getattr(conn, 'client_have_voice', False):
+                                    conn.client_voice_stop = True
+                                    logger.info(f"[VAD-DIRECT-STOP] 检测到语音可能已结束，设置client_voice_stop=True")
+                            
+                            result = is_speech
+                        except Exception as vad_error:
+                            logger.error(f"[VAD-DIRECT-ERROR] 直接调用VAD处理失败: {vad_error}")
+                            logger.error(f"[VAD-DIRECT-ERROR] 回退到process_audio_internal处理")
+                            
+                            # 回退到原有流程
+                            result = await process_audio_internal(conn, audio_data_for_vad)
                     if packet_counter % 100 == 0 or result is not None:
                         logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{packet_counter}，结果: {result}")
                 except ImportError as e:

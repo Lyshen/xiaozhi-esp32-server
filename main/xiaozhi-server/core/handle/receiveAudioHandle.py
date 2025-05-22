@@ -21,8 +21,12 @@ async def process_audio_internal(conn, audio):
     
     # 判断是否有语音
     if conn.client_listen_mode == "auto":
+        # 使用VAD检测语音，调用已经包含正确的日志格式
         have_voice = conn.vad.is_vad(conn, audio)
+        # 不需要在这里添加额外的VAD日志，因为在VADHelper.is_vad中已经记录了
     else:
+        # 非自动模式，直接使用客户端设置的语音状态
+        logger.info(f"[VAD-INFO] 使用手动模式，直接使用客户端语音状态: {conn.client_have_voice}")
         have_voice = conn.client_have_voice
 
     # 如果本次没有声音，本段也没声音，就把声音丢弃了

@@ -33,7 +33,7 @@ class VADProvider(VADProviderBase):
                 _ = np.frombuffer(audio_data, dtype=np.int16)
                 # 如果可以解析为int16数组，则认为是PCM数据
                 pcm_frame = audio_data
-                logger.info(f"[VAD-DEBUG] 检测到PCM数据，长度: {len(pcm_frame)}字节")
+                logger.debug(f"[VAD-DEBUG] 检测到PCM数据，长度: {len(pcm_frame)}字节")
             except Exception:
                 # 如果不能解析为PCM，尝试作为Opus解码
                 try:

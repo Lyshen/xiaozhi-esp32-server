@@ -1009,7 +1009,7 @@ class ConnectionManager:
         self.audio_bytes_counters[client_id] += frame_size
         
         # 前10帧都详细记录，之后每10帧记录一次
-        if frame_counter <= 10 or frame_counter % 10 == 0:
+        if frame_counter <= 10 or frame_counter % 100 == 0:
             format_name = frame.format.name if hasattr(frame, 'format') and frame.format else 'unknown'
             sample_rate = frame.sample_rate if hasattr(frame, 'sample_rate') else 'unknown'
             channels = getattr(frame, 'channels', '?')
