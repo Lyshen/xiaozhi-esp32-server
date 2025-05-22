@@ -22,6 +22,30 @@ class VADHelper:
         # 初始化VAD提供者（延迟加载）
         self.vad = None
         
+    def mark_speech_end(self, conn):
+        """
+        标记语音结束，触发ASR处理
+        
+        Args:
+            conn: WebRTC连接对象
+        """
+        if conn is None:
+            logger.warning("[VAD-MARK-END] 无法标记语音结束：连接对象为None")
+            return
+            
+        # 标记语音已检测到和结束
+        conn.client_have_voice = True  # 确保已标记有语音
+        conn.client_voice_stop = True  # 标记语音结束
+        
+        if hasattr(conn, 'client_voice_stop_requested'):
+            conn.client_voice_stop_requested = True
+            
+        logger.warning(f"[VAD-MARK-END] 标记语音结束，当前音频段数量: {len(getattr(conn, 'asr_audio', []))}")
+        
+        # 重置计数器
+        conn.vad_silence_count = 0
+        conn.vad_speech_count = 0
+        
     def _ensure_vad_loaded(self):
         """确保VAD模型已加载"""
         if self.vad is None:
@@ -125,13 +149,6 @@ class VADHelper:
             
             # ===== 预处理音频数据 =====
             data_size = len(audio_data)
-            
-            # 如果没有连接对象或数据很大，直接处理
-            #if not conn or data_size >= 3200:
-            #    logger.info(f"[VAD-DIRECT] 直接处理大尺寸音频数据，长度: {data_size} 字节")
-            #    is_speech, prob = self.vad.is_speech(audio_data)
-            #    logger.info(f"[VAD-DIRECT-RESULT] 直接处理结果: is_speech={is_speech}, 概率={prob}")
-            #    return is_speech, prob
             
             # ===== 缓冲区处理逻辑 =====
             # 初始化音频缓冲区（如果不存在）

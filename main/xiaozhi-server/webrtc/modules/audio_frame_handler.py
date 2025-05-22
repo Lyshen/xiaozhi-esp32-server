@@ -33,6 +33,115 @@ class AudioFrameHandler:
         self.last_log_time = {}
         self.client_stats = {}
     
+    async def _process_audio_for_asr(self, conn, client_id):
+        """
+        处理音频数据进行ASR识别
+        
+        Args:
+            conn: WebRTC连接对象
+            client_id: 客户端ID
+            
+        Returns:
+            str: 识别结果文本，如果失败则返回空字符串
+        """
+        logger.warning(f"[SERVER-AUDIO] 开始处理整合的音频段，总共 {len(conn.asr_audio)} 段，准备调用ASR处理")
+        
+        # 暂停接收新音频
+        conn.asr_server_receive = False
+        
+        try:
+            # 提取音频数据，确保所有数据都是Opus格式
+            opus_audio_data = []
+            format_stats = {"opus": 0, "opus-converted": 0, "pcm": 0, "other": 0}
+            
+            # 收集和整理音频数据
+            for item in conn.asr_audio:
+                if isinstance(item, dict) and 'data' in item:
+                    data_format = item.get('format', 'unknown')
+                    if data_format in ['opus', 'opus-converted']:
+                        opus_audio_data.append(item['data'])
+                        format_stats[data_format] += 1
+                    elif data_format == 'pcm':
+                        format_stats['pcm'] += 1
+                        # PCM数据已在前面转换为Opus，跳过
+                        continue
+                    else:
+                        format_stats['other'] += 1
+                        opus_audio_data.append(item['data'])
+                elif item is not None:
+                    # 兼容旧版存储格式
+                    opus_audio_data.append(item)
+                    format_stats['other'] += 1
+            
+            # 记录音频数据统计
+            logger.info(f"[SERVER-AUDIO] ASR数据统计: 原始Opus: {format_stats['opus']}段, "
+                       f"转换Opus: {format_stats['opus-converted']}段, PCM: {format_stats['pcm']}段, "
+                       f"其他: {format_stats['other']}段")
+            
+            # 如果没有音频数据，直接返回
+            if not opus_audio_data:
+                logger.warning("[SERVER-AUDIO] 无效的音频数据，取消ASR处理")
+                return ""
+                
+            # 调用ASR处理
+            logger.info(f"[SERVER-AUDIO] 总共有效音频数据: {len(opus_audio_data)}段")
+            text, extra_info = await conn.asr.speech_to_text(opus_audio_data, conn.session_id)
+            logger.warning(f"[SERVER-AUDIO] ASR识别结果: '{text}'")
+            
+            # 清空音频缓冲区并重置状态
+            conn.asr_audio.clear()
+            if hasattr(conn, 'reset_vad_states'):
+                conn.reset_vad_states()
+            else:
+                conn.client_have_voice = False
+                conn.client_voice_stop = False
+                if hasattr(conn, 'client_voice_stop_requested'):
+                    conn.client_voice_stop_requested = False
+            
+            # 恢复接收新音频
+            conn.asr_server_receive = True
+            logger.warning("[SERVER-AUDIO] ASR处理完成，已重置状态，恢复接收音频")
+            logger.warning(f"[SERVER-AUDIO] VAD状态已重置: have_voice={conn.client_have_voice}, voice_stop={conn.client_voice_stop}, stop_requested={getattr(conn, 'client_voice_stop_requested', False)}")
+            
+            # 如果识别出文本，处理用户意图
+            if text and len(text.strip()) > 0:
+                try:
+                    # 导入必要的模块
+                    try:
+                        from core.handle.sendAudioHandle import send_stt_message
+                        from core.handle.intentHandler import handle_user_intent
+                    except ImportError:
+                        from main.xiaozhi_server.core.handle.sendAudioHandle import send_stt_message
+                        from main.xiaozhi_server.core.handle.intentHandler import handle_user_intent
+                        
+                    # 处理用户意图
+                    if conn.websocket:
+                        intent_handled = await handle_user_intent(conn, text)
+                        if not intent_handled:
+                            # 没有特殊意图，继续常规聊天
+                            await send_stt_message(conn, text)
+                            if hasattr(conn, 'use_function_call_mode') and conn.use_function_call_mode:
+                                conn.executor.submit(conn.chat_with_function_calling, text)
+                            else:
+                                conn.executor.submit(conn.chat, text)
+                except Exception as e:
+                    logger.error(f"[SERVER-AUDIO-ERROR] 处理ASR结果时发生错误: {e}")
+                    logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"[SERVER-AUDIO-ERROR] ASR处理失败: {e}")
+            logger.error(f"[SERVER-AUDIO-ERROR] 错误详情: {traceback.format_exc()}")
+            
+            # 出错时也清空音频缓冲区并恢复状态
+            conn.asr_audio.clear()
+            conn.client_have_voice = False
+            conn.client_voice_stop = False
+            conn.asr_server_receive = True
+            
+            return ""
+    
     async def convert_audio_to_pcm(self, frame):
         """将音频帧转换为PCM格式"""
         try:
@@ -154,7 +263,7 @@ class AudioFrameHandler:
             self.audio_bytes_counters[client_id] = self.audio_bytes_counters.get(client_id, 0) + pcm_data_size
             
             # 每10个包输出一次详细日志，增加日志频率
-            if counter == 1 or counter % 10 == 0:
+            if counter == 1 or counter % 100 == 0:
                 logger.info(f"[P2P-DATA] 包 #{counter}: 客户端={client_id}, 格式={frame_format}, 采样率={sample_rate}Hz, "
                          f"大小={pcm_data_size} 字节, 累计={self.audio_bytes_counters[client_id]} 字节")
                 
@@ -329,147 +438,37 @@ class AudioFrameHandler:
             # 4. 音频包计数器 - 使用已经递增过的counter值
             packet_counter = counter
             
-            # 5. 当收集到足够多的音频段时（至少15段），设置VAD标志并触发ASR处理
-            if len(conn.asr_audio) >= 15 and packet_counter % 30 == 0:
-                logger.warning(f"[SERVER-AUDIO] 已收集足够的音频段: {len(conn.asr_audio)} > 15 段，准备触发ASR处理")
-                # 设置VAD已检测到语音活动
-                conn.client_have_voice = True
-                # 标记语音片段结束，触发ASR处理
-                conn.client_voice_stop = True
-                logger.warning(f"[SERVER-AUDIO] 标记语音状态: have_voice=True, voice_stop=True，将触发ASR处理")
+            # 5. 删除基于音频段数量自动触发ASR的逻辑
+            # 现在我们让VAD解决何时触发ASR处理
             
-            # 6. 检查是否有全局Push-to-Talk停止请求标志
+            # 6. 处理Push-to-Talk停止请求 - 只转发给VAD处理模块
             try:
                 global_stop_requested = getattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', False)
                 client_id_for_stop = getattr(builtins, 'CLIENT_ID_FOR_STOP', None)
                 
-                # 如果全局标志存在，并且客户端ID匹配，则为当前连接设置停止标志
+                # 如果全局停止请求存在并且客户端ID匹配，通知VAD处理
                 if global_stop_requested and (client_id_for_stop is None or client_id_for_stop == client_id):
-                    conn.client_voice_stop = True
-                    if hasattr(conn, 'client_voice_stop_requested'):
-                        conn.client_voice_stop_requested = True
-                    logger.warning(f"[ASR-TRIGGER-GLOBAL] 检测到全局Push-to-Talk停止请求，已设置 client_voice_stop=True")
-                    # 重置全局标志，避免多次触发
-                    setattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', False)
+                    if not hasattr(conn, 'vad') or conn.vad is None:
+                        # 初始化VAD对象
+                        from webrtc.modules.vad_helper import VADHelper
+                        conn.vad = VADHelper()
+                        logger.info(f"[VAD-INIT] 为连接 {client_id} 初始化VAD助手")
+                    
+                    # 调用VAD帮助器标记语音结束
+                    logger.warning(f"[PTT-STOP] 检测到全局Push-to-Talk停止请求。正在标记语音结束")
+                    conn.vad.mark_speech_end(conn)  # 调用VAD帮助器标记语音结束
+                    setattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', False)  # 重置全局标志
             except Exception as e:
-                logger.warning(f"[ASR-TRIGGER-ERROR] 检查全局标志时出错: {e}")
+                logger.warning(f"[PTT-ERROR] 处理Push-to-Talk停止请求时出错: {e}")
             
-            # 7. 对ASR触发条件进行详细日志记录
-            has_stop_requested_attr = hasattr(conn, 'client_voice_stop_requested')
-            condition1 = conn.client_voice_stop and len(conn.asr_audio) >= 15
-            condition2 = has_stop_requested_attr and conn.client_voice_stop_requested and len(conn.asr_audio) > 0
+            # 7. 检测是否需要触发ASR处理
+            # 简化语音结束的判断逻辑
+            speech_ended = conn.client_voice_stop and len(conn.asr_audio) > 0
             
-            # 8. 当触发条件满足时，处理音频数据
-            if condition1 or condition2:
-                logger.warning(f"[SERVER-AUDIO] 开始处理整合的音频段，总共 {len(conn.asr_audio)} 段，准备调用ASR处理")
-                
-                # 暂停接收新音频
-                conn.asr_server_receive = False
-                
-                # 直接调用ASR接口处理累积的音频数据
-                try:
-                    # 提取音频数据，确保所有数据都是Opus格式
-                    opus_audio_data = []
-                    opus_converted_count = 0
-                    opus_original_count = 0
-                    pcm_count = 0
-                    
-                    for item in conn.asr_audio:
-                        if isinstance(item, dict) and 'data' in item:
-                            data_format = item.get('format', 'unknown')
-                            if data_format == 'opus':
-                                opus_audio_data.append(item['data'])
-                                opus_original_count += 1
-                            elif data_format == 'opus-converted':
-                                opus_audio_data.append(item['data'])
-                                opus_converted_count += 1
-                            elif data_format == 'pcm':
-                                # PCM数据应该在前面已经转换成Opus了，但为了完整性再次检查
-                                pcm_count += 1
-                                continue  # 跳过PCM数据，只使用Opus格式
-                            else:
-                                # 未知格式，作为原始数据使用
-                                opus_audio_data.append(item['data'])
-                        elif item is not None:
-                            # 兼容旧版存储格式，直接存储的数据
-                            opus_audio_data.append(item)
-                            
-                    logger.info(f"[SERVER-AUDIO] 准备处理ASR: 原始Opus: {opus_original_count}段, 转换Opus: {opus_converted_count}段, 原PCM: {pcm_count}段")
-                    logger.info(f"[SERVER-AUDIO] 总共有效Opus数据: {len(opus_audio_data)}段")
-                    
-                    text, extra_info = await conn.asr.speech_to_text(opus_audio_data, conn.session_id)
-                    logger.warning(f"[SERVER-AUDIO] ASR识别结果: '{text}'")
-                    
-                    # 处理识别文本
-                    if text and len(text.strip()) > 0:
-                        try:
-                            # 导入必要的模块
-                            try:
-                                from core.handle.sendAudioHandle import send_stt_message
-                                from core.handle.intentHandler import handle_user_intent
-                            except ImportError:
-                                from main.xiaozhi_server.core.handle.sendAudioHandle import send_stt_message
-                                from main.xiaozhi_server.core.handle.intentHandler import handle_user_intent
-                                
-                            # 处理用户意图
-                            if conn.websocket:
-                                intent_handled = await handle_user_intent(conn, text)
-                                if not intent_handled:
-                                    # 没有特殊意图，继续常规聊天
-                                    await send_stt_message(conn, text)
-                                    if hasattr(conn, 'use_function_call_mode') and conn.use_function_call_mode:
-                                        conn.executor.submit(conn.chat_with_function_calling, text)
-                                    else:
-                                        conn.executor.submit(conn.chat, text)
-                            vad = builtins_conn.vad
-                            print("[VAD-DEBUG] 开始调用VAD识别")
-                            
-                            # 直接使用最近收集的原始编码数据进行VAD检测
-                            try:
-                                if len(conn.asr_audio) > 0:
-                                    # 获取最近一段音频数据
-                                    last_audio = conn.asr_audio[-1]
-                                    
-                                    if isinstance(last_audio, dict) and 'data' in last_audio:
-                                        # 使用保存的格式化音频数据
-                                        audio_for_vad = last_audio['data']
-                                        is_encoded = last_audio.get('is_encoded', False)
-                                        format_type = last_audio.get('format', 'unknown')
-                                        
-                                        logger.info(f"[VAD-DEBUG] 使用{'原始编码' if is_encoded else 'PCM'}数据进行VAD检测，格式:{format_type}")
-                                        vad_result = await vad.is_vad(audio_for_vad, builtins_conn)
-                                    else:
-                                        # 兼容旧格式，直接使用数据
-                                        logger.info(f"[VAD-DEBUG] 使用未格式化的音频数据进行VAD检测")
-                                        vad_result = await vad.is_vad(last_audio, builtins_conn)
-                                else:
-                                    # 如果没有收集到音频数据，尝试使用当前帧
-                                    if original_opus_data is not None:
-                                        logger.info(f"[VAD-DEBUG] 没有收集到音频数据，使用当前帧的原始编码数据")
-                                        vad_result = await vad.is_vad(original_opus_data, builtins_conn)
-                                    elif audio_array is not None:
-                                        logger.info(f"[VAD-DEBUG] 没有收集到音频数据，使用当前帧的PCM数据")
-                                        vad_result = await vad.is_vad(audio_array, builtins_conn)
-                                    else:
-                                        logger.warning(f"[VAD-DEBUG] 没有可用的音频数据进行VAD检测")
-                                        vad_result = None
-                            except Exception as vad_error:
-                                logger.error(f"[VAD-ERROR] VAD处理失败: {vad_error}")
-                                vad_result = None
-                                
-                            if counter % 100 == 0 or vad_result is not None:
-                                logger.info(f"[P2P-DATA] VAD处理链路已完成，数据包 #{counter}，结果: {vad_result}")
-                        except Exception as e:
-                            logger.error(f"[SERVER-AUDIO-ERROR] 处理ASR结果时发生错误: {e}")
-                            logger.error(f"[SERVER-AUDIO-ERROR] 堆栈跟踪: {traceback.format_exc()}")
-                except Exception as e:
-                    logger.error(f"[SERVER-AUDIO-ERROR] ASR处理失败: {e}")
-                
-                # 清空音频缓冲区并重置状态
-                conn.asr_audio.clear()
-                conn.reset_vad_states()
-                conn.asr_server_receive = True
-                logger.warning("[SERVER-AUDIO] ASR处理完成，已重置状态，恢复接收音频")
+            # 8. 当检测到语音结束时，调用ASR处理
+            if speech_ended:
+                # 使用集中处理方法进行ASR识别
+                await self._process_audio_for_asr(conn, client_id)
             else:
                 # 常规音频处理流程
                 # 简化的VAD处理逻辑，专注于将音频数据传递给VADHelper
@@ -504,12 +503,6 @@ class AudioFrameHandler:
                         # 这是统一的入口点，确保所有音频都经过VAD处理
                         try:
                             is_speech, prob = conn.vad.process(audio_data_for_vad, conn)
-                            
-                            # 只记录必要的日志，避免日志过多
-                            if packet_counter % 50 == 0 or is_speech:
-                                logger.info(f"[VAD-RESULT] 客户端 {client_id} 数据包 #{packet_counter} 判定结果: 有语音={is_speech}, 概率={prob:.4f}")
-                            
-                            # VADHelper已经更新了连接的状态，这里不需要再更新
                         except Exception as vad_error:
                             logger.error(f"[VAD-ERROR] 调用VAD处理失败: {vad_error}")
                     else:

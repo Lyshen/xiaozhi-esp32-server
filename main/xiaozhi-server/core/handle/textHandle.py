@@ -36,11 +36,11 @@ async def handleTextMessage(conn, message):
                 conn.client_have_voice = True
                 conn.client_voice_stop = True
                 
-                logger.bind(tag=TAG).warning(f"[按钮释放] 收到stop消息，设置 client_voice_stop = True")
+                #logger.bind(tag=TAG).warning(f"[按钮释放] 收到stop消息，设置 client_voice_stop = True")
                 
                 # 获取客户端ID
                 device_id = conn.headers.get('device-id') if hasattr(conn, 'headers') else None
-                logger.bind(tag=TAG).warning(f"[按钮释放] 客户端ID: {device_id}")
+                #logger.bind(tag=TAG).warning(f"[按钮释放] 客户端ID: {device_id}")
                 
                 # 1. 解决方案：使用全局变量
                 try:
@@ -53,41 +53,41 @@ async def handleTextMessage(conn, message):
                         
                         # 尝试方法1：从sys.modules获取
                         if hasattr(sys.modules, 'main') and hasattr(sys.modules['main'], 'webrtc_module'):
-                            logger.bind(tag=TAG).warning(f"[按钮释放] 从'main'获取webrtc_module")
+                            #logger.bind(tag=TAG).warning(f"[按钮释放] 从'main'获取webrtc_module")
                             rtc_manager = sys.modules['main'].webrtc_module.connection_manager
                             
                         # 尝试方法2：从builtins获取
                         if rtc_manager is None and hasattr(builtins, 'webrtc_manager'):
-                            logger.bind(tag=TAG).warning(f"[按钮释放] 从builtins获取webrtc_manager")
+                            l#ogger.bind(tag=TAG).warning(f"[按钮释放] 从builtins获取webrtc_manager")
                             rtc_manager = getattr(builtins, 'webrtc_manager')
                             
                         # 尝试方法3：和检查其他WebRTC相关模块
                         for module_name, module in list(sys.modules.items()):
                             # 检查该模块是否含有WebRTC相关的类
                             if 'webrtc' in module_name.lower():
-                                logger.bind(tag=TAG).warning(f"[按钮释放] 检查模块: {module_name}")
+                                #logger.bind(tag=TAG).warning(f"[按钮释放] 检查模块: {module_name}")
                                 # 检查模块中的属性和变量
                                 for attr_name in dir(module):
                                     if 'manager' in attr_name.lower() or 'connect' in attr_name.lower():
                                         attr = getattr(module, attr_name)
-                                        logger.bind(tag=TAG).warning(f"[按钮释放] 检查属性: {attr_name}, 类型: {type(attr)}")
+                                        #logger.bind(tag=TAG).warning(f"[按钮释放] 检查属性: {attr_name}, 类型: {type(attr)}")
                                         # 检查该属性是否是实例并有webrtc_connections属性
                                         if hasattr(attr, 'webrtc_connections'):
                                             rtc_manager = attr
-                                            logger.bind(tag=TAG).warning(f"[按钮释放] 在{module_name}.{attr_name}中找到WebRTC连接管理器")
+                                            #logger.bind(tag=TAG).warning(f"[按钮释放] 在{module_name}.{attr_name}中找到WebRTC连接管理器")
                                             break
                                 if rtc_manager is not None:
                                     break
                         
                         if rtc_manager is not None:
-                            logger.bind(tag=TAG).warning(f"[按钮释放] 成功获取WebRTC连接管理器，尝试获取连接: {device_id}")
+                            #logger.bind(tag=TAG).warning(f"[按钮释放] 成功获取WebRTC连接管理器，尝试获取连接: {device_id}")
                             # 找到该客户端的WebRTC连接并直接设置状态
                             if device_id in rtc_manager.webrtc_connections:
                                 webrtc_conn = rtc_manager.webrtc_connections[device_id]
                                 # 直接设置状态标志
                                 webrtc_conn.client_voice_stop = True
                                 webrtc_conn.client_voice_stop_requested = True
-                                logger.bind(tag=TAG).warning(f"[按钮释放] 已直接设置WebRTC连接对象状态: voice_stop=True, stop_requested=True")
+                                #logger.bind(tag=TAG).warning(f"[按钮释放] 已直接设置WebRTC连接对象状态: voice_stop=True, stop_requested=True")
                             else:
                                 logger.bind(tag=TAG).warning(f"[按钮释放] 找不到客户端{device_id}的WebRTC连接")
                     except Exception as e:
@@ -98,7 +98,7 @@ async def handleTextMessage(conn, message):
                     # 2. 备用方案：设置全局标志
                     setattr(builtins, 'PUSH_TO_TALK_STOP_REQUESTED', True)
                     setattr(builtins, 'CLIENT_ID_FOR_STOP', device_id)
-                    logger.bind(tag=TAG).warning(f"[按钮释放] 已设置全局标志 PUSH_TO_TALK_STOP_REQUESTED = True")
+                    #logger.bind(tag=TAG).warning(f"[按钮释放] 已设置全局标志 PUSH_TO_TALK_STOP_REQUESTED = True")
                 except Exception as e:
                     logger.bind(tag=TAG).error(f"[按钮释放] 设置标志时出错: {e}")
                 
