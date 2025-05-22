@@ -98,10 +98,10 @@ class VADHelper:
             if not hasattr(self, 'vad_log_counter'):
                 self.vad_log_counter = 0
             
-            # 每100次输出一次日志
-            self.vad_log_counter = (self.vad_log_counter + 1) % 100
+            # 每10次输出一次日志
+            self.vad_log_counter = (self.vad_log_counter + 1) % 10
             if self.vad_log_counter == 0:
-                logger.warning(f"[VAD-DEBUG] 开始调用VAD识别")
+                logger.warning(f"[VAD-DEBUG] 开始调用VAD识别，音频数据长度: {len(audio)} 字节")
                 
             is_speech, prob = self.process(audio, conn)
             
@@ -131,6 +131,7 @@ class VADHelper:
     def process(self, audio_data, conn=None):
         """
         处理音频数据，检测是否有语音活动
+        使用统一的音频缓冲区队列系统来提高VAD准确性
         
         Args:
             audio_data: 音频数据（可能是PCM或Opus格式）
@@ -141,124 +142,135 @@ class VADHelper:
         """
         try:
             self._ensure_vad_loaded()
-            
-            # 记录音频数据信息
-            #logger.info(f"[VAD-DEBUG] 处理音频数据: 长度={len(audio_data)}字节, 前10字节={audio_data[:10]}")
-            
+        
             # 判断是否为Opus格式
             is_opus = False
             try:
                 if audio_data.startswith(b'OggS') or audio_data.startswith(b'OpusHead'):
                     is_opus = True
-                    #logger.info("[VAD-DEBUG] 检测到Opus格式数据")
             except:
                 # 如果无法检查前缀，假设不是Opus
                 pass
-                
-            # 如果是PCM数据，进行统计分析
+            
+            # 如果是PCM数据，进行预处理
             if not is_opus:
                 try:
-                    # 简单检查是否是可能的PCM数据
                     # 确保数据长度是2的倍数 (int16 = 2 bytes)
                     buffer_len = len(audio_data)
                     if buffer_len % 2 != 0:
-                        # 如果不是2的倍数，裁剪掉最后一个字节
                         audio_data = audio_data[:-1]
                         logger.debug(f"[VAD-DEBUG] 裁剪音频数据以确保长度是2的倍数: {buffer_len} -> {len(audio_data)}")
                     
-                    data_array = np.frombuffer(audio_data, dtype=np.int16)
-                    mean_val = np.mean(np.abs(data_array))
-                    std_val = np.std(data_array)
-                    #logger.info(f"[VAD-DEBUG] 音频统计: 平均振幅={mean_val:.2f}, 标准差={std_val:.2f}")
-                    
-                    # 检查是否为静音
-                    if mean_val < 100:  # 阈值可能需要调整
-                        logger.warning(f"[VAD-DEBUG] 可能为静音数据，平均振幅过低: {mean_val:.2f}")
+                    # 简单音频统计分析（仅用于日志）
+                    if buffer_len >= 10:  # 确保有足够的数据进行分析
+                        data_array = np.frombuffer(audio_data, dtype=np.int16)
+                        mean_val = np.mean(np.abs(data_array))
+                        
+                        # 仅在平均振幅非常低时记录警告
+                        if mean_val < 50:  # 降低阈值，减少不必要的警告
+                            logger.debug(f"[VAD-DEBUG] 可能为静音数据，平均振幅过低: {mean_val:.2f}")
                 except Exception as np_err:
-                    logger.warning(f"[VAD-DEBUG] 音频统计分析失败: {np_err}")
+                    logger.debug(f"[VAD-DEBUG] 音频统计分析失败: {np_err}")
             
-            # 处理短音频片段 - 实现音频累积机制
-            if len(audio_data) < 320 and not is_opus:  # 仅对PCM数据进行长度检查
-                # 初始化音频缓冲区
-                if conn and not hasattr(conn, 'audio_buffer'):
-                    conn.audio_buffer = {}
-                    conn.audio_buffer['pcm'] = []
-                    conn.audio_buffer['opus'] = []
-                    conn.audio_buffer['last_append_time'] = time.time()
+            # ===== 统一的音频缓冲区管理 =====
+            # 初始化音频缓冲区（如果需要）
+            if conn:
+                if not hasattr(conn, 'audio_buffer'):
+                    conn.audio_buffer = {
+                        'pcm': [],          # PCM格式数据缓冲区
+                        'opus': [],         # Opus格式数据缓冲区（预留）
+                        'last_append_time': time.time(),  # 上次添加数据的时间
+                        'total_size': 0     # 缓冲区当前总大小
+                    }
                 
-                buffer_type = 'pcm'  # PCM 格式
+                # 选择正确的缓冲区类型
+                buffer_type = 'opus' if is_opus else 'pcm'
                 
-                # 将短音频片段添加到缓冲区
-                if conn:
-                    # 添加到相应的缓冲区
-                    conn.audio_buffer[buffer_type].append(audio_data)
-                    conn.audio_buffer['last_append_time'] = time.time()
-                    
-                    # 记录缓冲区状态
-                    total_size = sum(len(segment) for segment in conn.audio_buffer[buffer_type])
-                    logger.info(f"[VAD-BUFFER] 已累积 {len(conn.audio_buffer[buffer_type])} 个音频片段，总大小:{total_size}字节")
-                    
-                    # 当缓冲区累积足够数据时进行处理
-                    if total_size >= 640:  # 降低阈值到640字节，使程序能更快地处理短音频
-                        try:
-                            # 合并音频数据
-                            combined_data = b''.join(conn.audio_buffer[buffer_type])
-                            logger.warning(f"[VAD-BUFFER] 成功合并{len(conn.audio_buffer[buffer_type])}个短音频片段，总长度:{len(combined_data)}字节")
-                            
-                            # 清空缓冲区
-                            conn.audio_buffer[buffer_type] = []
-                            conn.audio_buffer['last_append_time'] = time.time()
-                            
-                            # 处理合并后的音频
-                            is_speech, prob = self.vad.is_speech(combined_data)
-                            # 合并成功的话，始终返回true，但使用实际VAD结果的概率
-                            return True, prob
-                        except Exception as e:
-                            logger.error(f"[VAD-BUFFER] 合并音频处理失败: {e}")
-                            # 出错时也清空缓冲区防止持续累积错误数据
-                            conn.audio_buffer[buffer_type] = []
-                    
-                    # 如果超过一定时间没有处理，则尝试强制处理缓冲区内容，而非直接清空
-                    if time.time() - conn.audio_buffer['last_append_time'] > 2.0 and len(conn.audio_buffer[buffer_type]) > 0:  # 2秒超时
-                        # 如果超时但有数据，尝试处理当前已有数据而非丢弃
-                        try:
-                            total_size = sum(len(segment) for segment in conn.audio_buffer[buffer_type])
-                            if total_size > 0:
-                                logger.warning(f"[VAD-BUFFER] 音频缓冲区超时处理，尝试处理{len(conn.audio_buffer[buffer_type])}个片段，大小{total_size}字节")
-                                combined_data = b''.join(conn.audio_buffer[buffer_type])
-                                conn.audio_buffer[buffer_type] = []
-                                conn.audio_buffer['last_append_time'] = time.time()
-                                
-                                # 即使数据不够长，也尝试处理
-                                is_speech, prob = self.vad.is_speech(combined_data)
-                                # 超时但数据量不多时，始终返回True使得数据能被处理
-                                # 如果按钮已释放，这可以确保短音频也被处理
-                                return True, max(0.4, prob)
-                        except Exception as e:
-                            logger.error(f"[VAD-BUFFER] 超时处理音频失败: {e}")
-                            conn.audio_buffer[buffer_type] = []
-                            conn.audio_buffer['last_append_time'] = time.time()
+                # 添加数据到缓冲区并更新元数据
+                conn.audio_buffer[buffer_type].append(audio_data)
+                conn.audio_buffer['last_append_time'] = time.time()
+                conn.audio_buffer['total_size'] = sum(len(segment) for segment in conn.audio_buffer[buffer_type])
                 
-                # 对于短片段但没有连接对象的情况，返回False
-                if not conn:
-                    logger.warning("[VAD-BUFFER] 没有连接对象来存储音频缓冲区")
+                total_size = conn.audio_buffer['total_size']
+                segments_count = len(conn.audio_buffer[buffer_type])
                 
-                # 返回处理延迟的标志
-                return False, 0.0  # 返回False表示当前未检测到语音，但数据已被累积
+                # 每10个包记录一次缓冲区状态（避免日志过多）
+                if segments_count % 10 == 0 or segments_count <= 2:
+                    logger.info(f"[VAD-BUFFER] 已累积 {segments_count} 个音频片段，总大小:{total_size}字节")
                 
-            # VAD处理 - 使用原始接口，不添加额外参数
-            is_speech, prob = self.vad.is_speech(audio_data)
+                # 判断是否应该处理缓冲区数据
+                process_buffer = False
+                process_reason = ""
+                
+                # 情况1: 缓冲区达到处理阈值
+                if total_size >= 6400:  # 6400字节处理阈值
+                    process_buffer = True
+                    process_reason = "达到处理阈值"
+                
+                # 情况2: 缓冲区超时（确保音频不会永远积累不处理）
+                elif time.time() - conn.audio_buffer['last_append_time'] > 1.5 and segments_count > 0:  # 1.5秒超时
+                    process_buffer = True
+                    process_reason = "缓冲区超时"
+                
+                # 如果需要处理缓冲区
+                if process_buffer and segments_count > 0:
+                    try:
+                        # 合并音频数据
+                        combined_data = b''.join(conn.audio_buffer[buffer_type])
+                        combined_size = len(combined_data)
+                        
+                        # 记录合并状态
+                        logger.info(f"[VAD-PROCESS] {process_reason}，处理缓冲区: {segments_count}个片段，大小{combined_size}字节")
+                        
+                        # 清空缓冲区
+                        conn.audio_buffer[buffer_type] = []
+                        conn.audio_buffer['total_size'] = 0
+                        conn.audio_buffer['last_append_time'] = time.time()
+                        
+                        # 调用VAD处理
+                        logger.info(f"[VAD-CALL] 调用VAD处理合并音频，数据长度: {combined_size} 字节")
+                        is_speech, prob = self.vad.is_speech(combined_data)
+                        
+                        # 根据处理原因调整返回值
+                        if process_reason == "缓冲区超时" and combined_size < 3200:
+                            # 对于短音频的超时处理，稍微提高概率以确保短音频能被后续处理
+                            logger.info(f"[VAD-RESULT] 超时短音频VAD结果: is_speech={is_speech}, 调整后概率={max(0.4, prob)}")
+                            return is_speech, max(0.4, prob)
+                        else:
+                            logger.info(f"[VAD-RESULT] VAD处理结果: is_speech={is_speech}, 概率={prob}")
+                            return is_speech, prob
+                    except Exception as e:
+                        logger.error(f"[VAD-BUFFER] 音频处理失败: {e}")
+                        # 出错时清空缓冲区防止持续累积错误数据
+                        conn.audio_buffer[buffer_type] = []
+                        conn.audio_buffer['total_size'] = 0
+                
+                # 如果是新添加的数据（不需要立即处理），返回延迟处理标志
+                if not process_buffer:
+                    return False, 0.0  # 返回False表示当前未检测到语音，但数据已被累积
+            # ===== 如果没有在缓冲区中处理，检查是否需要直接处理 =====
+            # 对于大于3200字节的单个数据包或没有连接对象的情况
+            if len(audio_data) >= 3200 or not conn:
+                # 记录日志（使用计数器减少日志频率）
+                if not hasattr(self, 'direct_log_counter'):
+                    self.direct_log_counter = 0
+                self.direct_log_counter = (self.direct_log_counter + 1) % 10
+                
+                if self.direct_log_counter == 0:
+                    logger.info(f"[VAD-DIRECT] 直接处理大尺寸音频数据，长度: {len(audio_data)} 字节")
+                
+                # 调用VAD处理
+                is_speech, prob = self.vad.is_speech(audio_data)
+                
+                # 记录结果（使用计数器减少日志频率）
+                if self.direct_log_counter == 0:
+                    logger.info(f"[VAD-DIRECT-RESULT] VAD结果: is_speech={is_speech}, 概率={prob}")
+                
+                return is_speech, prob
             
-            # 创建计数器属性，如果不存在
-            if not hasattr(self, 'process_log_counter'):
-                self.process_log_counter = 0
-            
-            # 每100次输出一次日志
-            self.process_log_counter = (self.process_log_counter + 1) % 100
-            if self.process_log_counter == 0:
-                logger.info(f"[VAD-DEBUG] VAD结果: is_speech={is_speech}, 概率={prob}")
-                
-            return is_speech, prob
+            # 以下情况不应该发生，因为所有情况都应该在上面处理过
+            logger.warning(f"[VAD-ERROR] 未预期的处理路径，音频大小: {len(audio_data)} 字节")
+            return False, 0.0
         except Exception as e:
             logger.error(f"[VAD-DEBUG] VAD处理错误: {str(e)}")
             logger.error(f"[VAD-DEBUG] 错误详情: {e.__class__.__name__}: {str(e)}")
