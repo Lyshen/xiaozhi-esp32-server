@@ -518,9 +518,9 @@ class AudioFrameHandler:
                         # 直接调用VAD助手而不是process_audio_internal
                         # 这确保了所有音频都通过VAD助手处理
                         try:
-                            # VADHelper.process不是异步方法，直接同步调用
+                            # VADHelper.process不是异步方法，直接同步调用 - 使用统一的缓冲区处理方法
                             is_speech, prob = conn.vad.process(audio_data_for_vad, conn)
-                            logger.info(f"[VAD-DIRECT-RESULT] 直接VAD处理结果: 有语音={is_speech}, 概率={prob}")
+                            logger.info(f"[VAD-BUFFER-RESULT] VAD缓冲区处理结果: 有语音={is_speech}, 概率={prob}")
                             
                             # 更新连接状态
                             if is_speech:
@@ -532,12 +532,12 @@ class AudioFrameHandler:
                                 # 如果连续静音超过一定阈值，可能声音结束
                                 if getattr(conn, 'vad_silence_count', 0) > 5 and getattr(conn, 'client_have_voice', False):
                                     conn.client_voice_stop = True
-                                    logger.info(f"[VAD-DIRECT-STOP] 检测到语音可能已结束，设置client_voice_stop=True")
+                                    logger.info(f"[VAD-STOP] 检测到语音可能已结束，设置client_voice_stop=True")
                             
                             result = is_speech
                         except Exception as vad_error:
-                            logger.error(f"[VAD-DIRECT-ERROR] 直接调用VAD处理失败: {vad_error}")
-                            logger.error(f"[VAD-DIRECT-ERROR] 回退到process_audio_internal处理")
+                            logger.error(f"[VAD-ERROR] VAD处理失败: {vad_error}")
+                            logger.error(f"[VAD-ERROR] 回退到process_audio_internal处理")
                             
                             # 回退到原有流程
                             result = await process_audio_internal(conn, audio_data_for_vad)
